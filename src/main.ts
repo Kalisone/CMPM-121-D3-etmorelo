@@ -1,4 +1,5 @@
 // @deno-types="npm:@types/leaflet"
+import type { LeafletMouseEvent } from "leaflet";
 import leaflet from "leaflet";
 
 // Style sheets
@@ -71,16 +72,13 @@ statusPanelDiv.innerHTML = "No points yet...";
 // //// //// //// //// //// ////
 
 // Token spawning parameters
-const TOKEN_SPAWN_PROBABILITY = 0.12; // per-grid-cell spawn chance
+const TOKEN_SPAWN_PROBABILITY = 0.12;
+const COLLECTION_RANGE = 3;
 
 // Layer to hold token markers (persist across view changes)
 const tokensLayer = leaflet.layerGroup().addTo(map);
-
-// In-memory collected tokens (session-only). Initial token placement
-// remains deterministic via `luck(key)` but collected tokens are not
-// persisted across browser reloads.
+// In-memory collected tokens (session-only).
 const collectedSet = new Set<string>();
-
 // Map of tokens keyed by base world-tile (tx:ty) so tokens persist across zooms
 const tokensMap = new Map<string, leaflet.Layer>();
 
@@ -139,12 +137,33 @@ function spawnTokensForViewport() {
 
         rect.bindTooltip("Token");
 
-        rect.on("click", () => {
-          tokensLayer.removeLayer(rect);
-          tokensMap.delete(key);
-          collectedSet.add(key);
-          playerPoints++;
-          statusPanelDiv.innerHTML = `${playerPoints} points accumulated`;
+        rect.on("click", (e: LeafletMouseEvent) => {
+          // Determine player's tile at the base zoom so collection is stable across zooms
+          const playerLatLng = playerMarker.getLatLng();
+          const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+          const playerTx = Math.floor(playerPt.x / GRID_SIZE);
+          const playerTy = Math.floor(playerPt.y / GRID_SIZE);
+
+          const dx = Math.abs(tx - playerTx);
+          const dy = Math.abs(ty - playerTy);
+          const gridDist = Math.max(dx, dy); // Chebyshev distance (gridspaces)
+
+          if (gridDist <= COLLECTION_RANGE) {
+            // Collect token
+            tokensLayer.removeLayer(rect);
+            tokensMap.delete(key);
+            collectedSet.add(key);
+            playerPoints++;
+            statusPanelDiv.innerHTML = `${playerPoints} points accumulated`;
+          } else {
+            // Show a temporary popup indicating token is too far
+            const popup = leaflet.popup({ closeButton: false, autoClose: true })
+              .setLatLng(e.latlng)
+              .setContent(`Too far — ${gridDist} gridspaces away`);
+            popup.openOn(map);
+            // Auto-close after a short delay
+            setTimeout(() => map.closePopup(popup), 900);
+          }
         });
 
         tokensMap.set(key, rect);
