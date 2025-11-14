@@ -34,7 +34,7 @@ mapDiv.append(inventoryBadge);
 const winBanner = document.createElement("div");
 winBanner.id = "winBanner";
 winBanner.innerHTML = `
-  <div>You win — you hold a token of value 8!</div>
+  <div>You win!</div>
   <div style="margin-top:10px;"><button id="playAgain">Play again</button></div>
 `;
 winBanner.style.display = "none";
@@ -95,10 +95,6 @@ const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
 playerMarker.bindTooltip("Player");
 playerMarker.addTo(map);
 
-// Player points and status display (unused for now)
-const _playerPoints = 0;
-statusPanelDiv.innerHTML = "No token in inventory.";
-
 // //// //// //// //// //// ////
 // TOKEN SPAWNING
 // //// //// //// //// //// ////
@@ -107,6 +103,7 @@ statusPanelDiv.innerHTML = "No token in inventory.";
 const TOKEN_SPAWN_PROBABILITY = 0.12;
 // Token exponents: tokens are 2^exp, exp range 0..TOKEN_MAX_EXP
 const TOKEN_MAX_EXP = 4;
+const WIN_VALUE = Math.pow(2, TOKEN_MAX_EXP); // value needed to win the game
 
 const _expWeights: number[] = [];
 for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
@@ -120,7 +117,7 @@ for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
   EXP_DISTRIBUTION.push(acc);
 }
 const EXP_SPAWN_MULTIPLIER = _expWeights.map((w) => w / _expWeights[0]);
-const COLLECTION_RANGE = 3;
+const PROXI_DETECT_RANGE = 20;
 
 // Layer to hold token markers (persist across view changes)
 const tokensLayer = leaflet.layerGroup().addTo(map);
@@ -139,7 +136,7 @@ function updateStatusPanel() {
   // Also update the on-map inventory badge
   if (inventoryBadge) inventoryBadge.innerText = holding;
   // Show win banner when player is holding a token of value 8 (2^3)
-  const hasWinToken = heldToken && 2 ** heldToken.exp === 8;
+  const hasWinToken = heldToken && 2 ** heldToken.exp === WIN_VALUE;
   if (hasWinToken) {
     hasWon = true;
     winBanner.classList.add("show-win");
@@ -247,7 +244,7 @@ function spawnTokensForViewport() {
           const dy = Math.abs(ty - playerTy);
           const gridDist = Math.max(dx, dy); // Chebyshev distance (gridspaces)
 
-          if (gridDist <= COLLECTION_RANGE) {
+          if (gridDist <= PROXI_DETECT_RANGE) {
             // If already holding a token
             if (heldToken) {
               // If held exponent matches map exponent, attempt to deposit/merge
