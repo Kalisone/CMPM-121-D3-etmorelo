@@ -28,11 +28,15 @@ const CLASSROOM_LATLNG = leaflet.latLng(
 );
 
 // Tunable gameplay parameters
-const GAMEPLAY_ZOOM_LEVEL = 19; /*
-const TILE_DEGREES = 1e-4;
-const NEIGHBORHOOD_SIZE = 8;
-const CACHE_SPAWN_PROBABILITY = 0.1;
-*/
+const GAMEPLAY_ZOOM_LEVEL = 19;
+//const TILE_DEGREES = 1e-4;
+//const NEIGHBORHOOD_SIZE = 8;
+//const CACHE_SPAWN_PROBABILITY = 0.1;
+const GRID_SIZE = 60;
+
+// //// //// //// //// //// ////
+// MAP
+// //// //// //// //// //// ////
 
 // Create the map (element with id "map" is defined in index.html)
 const map = leaflet.map(mapDiv, {
@@ -55,3 +59,20 @@ leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
 playerMarker.bindTooltip("Player");
 playerMarker.addTo(map);
+
+// GRID
+leaflet.GridLayer = leaflet.GridLayer.extend({
+  createTile: function () {
+    const tile = document.createElement("div");
+    tile.style.outline = "1px solid orange";
+    return tile;
+  },
+});
+
+leaflet.gridLayer = function (opts) {
+  return new leaflet.GridLayer(opts);
+};
+
+map.addLayer(leaflet.gridLayer({
+  tileSize: GRID_SIZE,
+}));
