@@ -24,6 +24,12 @@ const statusPanelDiv = document.createElement("div");
 statusPanelDiv.id = "statusPanel";
 document.body.append(statusPanelDiv);
 
+// Inventory badge shown over the map canvas
+const inventoryBadge = document.createElement("div");
+inventoryBadge.id = "inventoryBadge";
+inventoryBadge.innerText = "Holding: none";
+mapDiv.append(inventoryBadge);
+
 // Our classroom location
 const CLASSROOM_LATLNG = leaflet.latLng(
   36.997936938057016,
@@ -64,8 +70,8 @@ playerMarker.bindTooltip("Player");
 playerMarker.addTo(map);
 
 // Player points and status display
-let playerPoints = 0;
-statusPanelDiv.innerHTML = "No points yet...";
+const playerPoints = 0;
+statusPanelDiv.innerHTML = "No token in inventory.";
 
 // //// //// //// //// //// ////
 // TOKEN SPAWNING
@@ -87,6 +93,18 @@ const tokensLayer = leaflet.layerGroup().addTo(map);
 const collectedSet = new Set<string>();
 // Map of tokens keyed by base world-tile (tx:ty); stores layer + value
 const tokensMap = new Map<string, { layer: leaflet.Layer; value: number }>();
+// Single-slot inventory: player can hold at most one token at a time
+let heldToken: { key: string; value: number } | null = null;
+
+function updateStatusPanel() {
+  const holding = heldToken ? `Holding: ${heldToken.value}` : "Holding: none";
+  statusPanelDiv.innerHTML = `${playerPoints} points accumulated — ${holding}`;
+  // Also update the on-map inventory badge
+  if (inventoryBadge) inventoryBadge.innerText = holding;
+}
+
+// Initialize status panel
+updateStatusPanel();
 
 // Spawn tokens for the currently visible world-tile cells.
 function spawnTokensForViewport() {
@@ -176,12 +194,26 @@ function spawnTokensForViewport() {
           const gridDist = Math.max(dx, dy); // Chebyshev distance (gridspaces)
 
           if (gridDist <= COLLECTION_RANGE) {
-            // Collect token
-            tokensLayer.removeLayer(rect);
-            tokensMap.delete(key);
-            collectedSet.add(key);
-            playerPoints += value; // award points equal to token value
-            statusPanelDiv.innerHTML = `${playerPoints} points accumulated`;
+            // If already holding a token, prevent picking up another
+            if (heldToken) {
+              const popup = leaflet.popup({
+                closeButton: false,
+                autoClose: true,
+              })
+                .setLatLng(e.latlng)
+                .setContent(
+                  `You are already carrying a token (value ${heldToken.value})`,
+                );
+              popup.openOn(map);
+              setTimeout(() => map.closePopup(popup), 900);
+            } else {
+              // Pick up token into the single-slot inventory (do not award points now)
+              tokensLayer.removeLayer(rect);
+              tokensMap.delete(key);
+              collectedSet.add(key);
+              heldToken = { key, value };
+              updateStatusPanel();
+            }
           } else {
             // Show a temporary popup indicating token is too far
             const popup = leaflet.popup({ closeButton: false, autoClose: true })

@@ -27,7 +27,7 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] render contents of each gridspace (token value or empty) with graphics or text
 - [x] implement proximity & collection logic (clickhandlers with proxycheck)
 - [x] give tokens different values
-- [ ] implement player inventory & inventory display system
+- [x] implement player inventory & inventory display system
 - [ ] implement crafting system: player combines 2 tokens of same value
 
 ### D3.b
