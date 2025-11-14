@@ -73,14 +73,20 @@ statusPanelDiv.innerHTML = "No points yet...";
 
 // Token spawning parameters
 const TOKEN_SPAWN_PROBABILITY = 0.12;
+const TOKEN_MAX_VALUE = 4; // token values will be 1..TOKEN_MAX_VALUE
+// Rarity distribution (cumulative) for values 1..4. These define how likely
+// a value is when a token is considered. Higher values are rarer.
+const VALUE_DISTRIBUTION = [0, 0.6, 0.85, 0.95, 1.0];
+// Spawn weight multiplier per value (index by value). Higher value -> lower multiplier.
+const VALUE_SPAWN_MULTIPLIER = [0, 1.0, 0.6, 0.3, 0.12];
 const COLLECTION_RANGE = 3;
 
 // Layer to hold token markers (persist across view changes)
 const tokensLayer = leaflet.layerGroup().addTo(map);
 // In-memory collected tokens (session-only).
 const collectedSet = new Set<string>();
-// Map of tokens keyed by base world-tile (tx:ty) so tokens persist across zooms
-const tokensMap = new Map<string, leaflet.Layer>();
+// Map of tokens keyed by base world-tile (tx:ty); stores layer + value
+const tokensMap = new Map<string, { layer: leaflet.Layer; value: number }>();
 
 // Spawn tokens for the currently visible world-tile cells.
 function spawnTokensForViewport() {
@@ -108,12 +114,27 @@ function spawnTokensForViewport() {
       // If token already exists for this cell, ensure it's in the layer and continue
       if (tokensMap.has(key)) {
         const existing = tokensMap.get(key)!;
-        if (!tokensLayer.hasLayer(existing)) tokensLayer.addLayer(existing);
+        if (!tokensLayer.hasLayer(existing.layer)) {
+          tokensLayer.addLayer(existing.layer);
+        }
         continue;
       }
 
-      // Determine deterministic chance for this world-tile (key is stable across zooms)
-      if (luck(key) < TOKEN_SPAWN_PROBABILITY) {
+      // Determine deterministic token value for this cell using a rarity distribution
+      const vRand = luck(key + ":value");
+      let value = 1;
+      for (let v = 1; v <= TOKEN_MAX_VALUE; v++) {
+        if (vRand < VALUE_DISTRIBUTION[v]) {
+          value = v;
+          break;
+        }
+      }
+
+      // Use a separate luck call for spawn so value rarity influences spawn chance
+      const spawnRand = luck(key + ":spawn");
+      const spawnThreshold = TOKEN_SPAWN_PROBABILITY *
+        VALUE_SPAWN_MULTIPLIER[value];
+      if (spawnRand < spawnThreshold) {
         // Compute lat/lng bounds for this tile at base zoom
         const nwTile = leaflet.point(tx * GRID_SIZE, ty * GRID_SIZE);
         const seTile = leaflet.point(
@@ -128,6 +149,7 @@ function spawnTokensForViewport() {
         ]]);
 
         // Filled rectangle to represent a token occupying the whole grid space
+        // Use uniform coloring for tokens (restore original colors)
         const rect = leaflet.rectangle(tileBounds, {
           weight: 1,
           color: "#cc6600",
@@ -135,7 +157,12 @@ function spawnTokensForViewport() {
           fillOpacity: 0.2,
         });
 
-        rect.bindTooltip("Token");
+        // Show the token's value as a permanent centered tooltip
+        rect.bindTooltip(String(value), {
+          permanent: true,
+          direction: "center",
+          className: "token-label",
+        });
 
         rect.on("click", (e: LeafletMouseEvent) => {
           // Determine player's tile at the base zoom so collection is stable across zooms
@@ -153,7 +180,7 @@ function spawnTokensForViewport() {
             tokensLayer.removeLayer(rect);
             tokensMap.delete(key);
             collectedSet.add(key);
-            playerPoints++;
+            playerPoints += value; // award points equal to token value
             statusPanelDiv.innerHTML = `${playerPoints} points accumulated`;
           } else {
             // Show a temporary popup indicating token is too far
@@ -166,7 +193,7 @@ function spawnTokensForViewport() {
           }
         });
 
-        tokensMap.set(key, rect);
+        tokensMap.set(key, { layer: rect, value });
         tokensLayer.addLayer(rect);
       }
     }
