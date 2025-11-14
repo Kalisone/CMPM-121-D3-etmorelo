@@ -7,6 +7,8 @@ import "./style.css"; // student-controlled page style
 
 // Fix missing marker images
 import "./_leafletWorkaround.ts"; // fixes for missing Leaflet images
+// Import our luck function for deterministic randomness
+import luck from "./_luck.ts";
 
 // Create basic UI elements
 const controlPanelDiv = document.createElement("div");
@@ -60,7 +62,109 @@ const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
 playerMarker.bindTooltip("Player");
 playerMarker.addTo(map);
 
-// GRID
+// Player points and status display
+let playerPoints = 0;
+statusPanelDiv.innerHTML = "No points yet...";
+
+// //// //// //// //// //// ////
+// TOKEN SPAWNING
+// //// //// //// //// //// ////
+
+// Token spawning parameters
+const TOKEN_SPAWN_PROBABILITY = 0.12; // per-grid-cell spawn chance
+
+// Layer to hold token markers (persist across view changes)
+const tokensLayer = leaflet.layerGroup().addTo(map);
+
+// In-memory collected tokens (session-only). Initial token placement
+// remains deterministic via `luck(key)` but collected tokens are not
+// persisted across browser reloads.
+const collectedSet = new Set<string>();
+
+// Map of tokens keyed by base world-tile (tx:ty) so tokens persist across zooms
+const tokensMap = new Map<string, leaflet.Layer>();
+
+// Spawn tokens for the currently visible world-tile cells.
+function spawnTokensForViewport() {
+  const baseZoom = GAMEPLAY_ZOOM_LEVEL;
+  const bounds = map.getBounds();
+
+  const nw = bounds.getNorthWest();
+  const se = bounds.getSouthEast();
+
+  const nwPt = map.project(nw, baseZoom);
+  const sePt = map.project(se, baseZoom);
+
+  const minX = Math.floor(Math.min(nwPt.x, sePt.x) / GRID_SIZE);
+  const maxX = Math.floor((Math.max(nwPt.x, sePt.x) - 1) / GRID_SIZE);
+  const minY = Math.floor(Math.min(nwPt.y, sePt.y) / GRID_SIZE);
+  const maxY = Math.floor((Math.max(nwPt.y, sePt.y) - 1) / GRID_SIZE);
+
+  for (let tx = minX; tx <= maxX; tx++) {
+    for (let ty = minY; ty <= maxY; ty++) {
+      const key = `${tx}:${ty}`;
+
+      // Don't spawn if already collected
+      if (collectedSet.has(key)) continue;
+
+      // If token already exists for this cell, ensure it's in the layer and continue
+      if (tokensMap.has(key)) {
+        const existing = tokensMap.get(key)!;
+        if (!tokensLayer.hasLayer(existing)) tokensLayer.addLayer(existing);
+        continue;
+      }
+
+      // Determine deterministic chance for this world-tile (key is stable across zooms)
+      if (luck(key) < TOKEN_SPAWN_PROBABILITY) {
+        // Compute lat/lng bounds for this tile at base zoom
+        const nwTile = leaflet.point(tx * GRID_SIZE, ty * GRID_SIZE);
+        const seTile = leaflet.point(
+          (tx + 1) * GRID_SIZE,
+          (ty + 1) * GRID_SIZE,
+        );
+        const nwLatLng = map.unproject(nwTile, baseZoom);
+        const seLatLng = map.unproject(seTile, baseZoom);
+        const tileBounds = leaflet.latLngBounds([[nwLatLng.lat, nwLatLng.lng], [
+          seLatLng.lat,
+          seLatLng.lng,
+        ]]);
+
+        // Filled rectangle to represent a token occupying the whole grid space
+        const rect = leaflet.rectangle(tileBounds, {
+          weight: 1,
+          color: "#cc6600",
+          fillColor: "#ff7f0e",
+          fillOpacity: 0.2,
+        });
+
+        rect.bindTooltip("Token");
+
+        rect.on("click", () => {
+          tokensLayer.removeLayer(rect);
+          tokensMap.delete(key);
+          collectedSet.add(key);
+          playerPoints++;
+          statusPanelDiv.innerHTML = `${playerPoints} points accumulated`;
+        });
+
+        tokensMap.set(key, rect);
+        tokensLayer.addLayer(rect);
+      }
+    }
+  }
+}
+
+// Refresh tokens when the view changes or the map is resized
+map.on("moveend", spawnTokensForViewport);
+map.on("zoomend", spawnTokensForViewport);
+map.on("resize", spawnTokensForViewport);
+
+// Initial spawn
+spawnTokensForViewport();
+
+// //// //// //// //// //// ////
+// GRID OVERLAY
+// //// //// //// //// //// ////
 leaflet.GridLayer = leaflet.GridLayer.extend({
   createTile: function () {
     const tile = document.createElement("div");

@@ -23,9 +23,10 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] put a basic leaflet map on the screen
 - [x] draw the player's location on the map
 - [x] draw a whole grid of cells on the map
-- [ ] implement tokenspawning logic using deterministic hashing mechanism (see luck function in reference.ts)
-- [ ] render contents of each gridspace (token value or empty) with graphics or text
+- [x] implement tokenspawning logic using deterministic hashing mechanism (see luck function in reference.ts)
+- [x] render contents of each gridspace (token value or empty) with graphics or text
 - [ ] implement proximity & collection logic (clickhandlers with proxycheck)
+- [ ] give tokens different values
 - [ ] implement player inventory & inventory display system
 - [ ] implement crafting system: player combines 2 tokens of same value
 
