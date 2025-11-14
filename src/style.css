@@ -25,6 +25,28 @@
   pointer-events: none;
 }
 
+/* Win banner shown in the center of the map when the player wins */
+#winBanner {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  background: rgba(255, 255, 255, 0.95);
+  color: #111;
+  padding: 18px 26px;
+  border-radius: 10px;
+  font-size: 1.25rem;
+  font-weight: 700;
+  z-index: 2000;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  display: none;
+}
+
+/* Show class for win banner */
+.show-win {
+  display: block !important;
+}
+
 /* Tooltip label for token values */
 .token-label {
   background: rgba(0, 0, 0, 0.65) !important;

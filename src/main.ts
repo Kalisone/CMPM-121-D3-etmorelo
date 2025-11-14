@@ -30,6 +30,35 @@ inventoryBadge.id = "inventoryBadge";
 inventoryBadge.innerText = "Holding: none";
 mapDiv.append(inventoryBadge);
 
+// Win banner (hidden until player wins). Includes a Play Again button.
+const winBanner = document.createElement("div");
+winBanner.id = "winBanner";
+winBanner.innerHTML = `
+  <div>You win — you hold a token of value 8!</div>
+  <div style="margin-top:10px;"><button id="playAgain">Play again</button></div>
+`;
+winBanner.style.display = "none";
+mapDiv.append(winBanner);
+
+let hasWon = false;
+
+// Play again handler: clear collected/held state and respawn tokens
+function playAgain() {
+  hasWon = false;
+  heldToken = null;
+  collectedSet.clear();
+  tokensLayer.clearLayers();
+  tokensMap.clear();
+  updateStatusPanel();
+  spawnTokensForViewport();
+}
+
+// Attach listener to the Play Again button once the element exists
+winBanner.addEventListener("click", (e) => {
+  const target = e.target as HTMLElement;
+  if (target && target.id === "playAgain") playAgain();
+});
+
 // Our classroom location
 const CLASSROOM_LATLNG = leaflet.latLng(
   36.997936938057016,
@@ -38,9 +67,6 @@ const CLASSROOM_LATLNG = leaflet.latLng(
 
 // Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
-//const TILE_DEGREES = 1e-4;
-//const NEIGHBORHOOD_SIZE = 8;
-//const CACHE_SPAWN_PROBABILITY = 0.1;
 const GRID_SIZE = 60;
 
 // //// //// //// //// //// ////
@@ -69,8 +95,8 @@ const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
 playerMarker.bindTooltip("Player");
 playerMarker.addTo(map);
 
-// Player points and status display
-const playerPoints = 0;
+// Player points and status display (unused for now)
+const _playerPoints = 0;
 statusPanelDiv.innerHTML = "No token in inventory.";
 
 // //// //// //// //// //// ////
@@ -79,28 +105,48 @@ statusPanelDiv.innerHTML = "No token in inventory.";
 
 // Token spawning parameters
 const TOKEN_SPAWN_PROBABILITY = 0.12;
-const TOKEN_MAX_VALUE = 4; // token values will be 1..TOKEN_MAX_VALUE
-// Rarity distribution (cumulative) for values 1..4. These define how likely
-// a value is when a token is considered. Higher values are rarer.
-const VALUE_DISTRIBUTION = [0, 0.6, 0.85, 0.95, 1.0];
-// Spawn weight multiplier per value (index by value). Higher value -> lower multiplier.
-const VALUE_SPAWN_MULTIPLIER = [0, 1.0, 0.6, 0.3, 0.12];
+// Token exponents: tokens are 2^exp, exp range 0..TOKEN_MAX_EXP
+const TOKEN_MAX_EXP = 4;
+
+const _expWeights: number[] = [];
+for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
+  _expWeights.push(1 / Math.pow(2, e));
+}
+const expTotal = _expWeights.reduce((s, v) => s + v, 0);
+const EXP_DISTRIBUTION: number[] = [];
+let acc = 0;
+for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
+  acc += _expWeights[e] / expTotal;
+  EXP_DISTRIBUTION.push(acc);
+}
+const EXP_SPAWN_MULTIPLIER = _expWeights.map((w) => w / _expWeights[0]);
 const COLLECTION_RANGE = 3;
 
 // Layer to hold token markers (persist across view changes)
 const tokensLayer = leaflet.layerGroup().addTo(map);
 // In-memory collected tokens (session-only).
 const collectedSet = new Set<string>();
-// Map of tokens keyed by base world-tile (tx:ty); stores layer + value
-const tokensMap = new Map<string, { layer: leaflet.Layer; value: number }>();
-// Single-slot inventory: player can hold at most one token at a time
-let heldToken: { key: string; value: number } | null = null;
+// Map of tokens keyed by base world-tile (tx:ty); stores layer + exponent
+const tokensMap = new Map<string, { layer: leaflet.Layer; exp: number }>();
+// Single-slot inventory: player can hold at most one token at a time (store exponent)
+let heldToken: { key: string; exp: number } | null = null;
 
 function updateStatusPanel() {
-  const holding = heldToken ? `Holding: ${heldToken.value}` : "Holding: none";
-  statusPanelDiv.innerHTML = `${playerPoints} points accumulated — ${holding}`;
+  const holding = heldToken
+    ? `Holding: ${2 ** heldToken.exp}`
+    : "Holding: none";
+  statusPanelDiv.innerHTML = `${holding}`;
   // Also update the on-map inventory badge
   if (inventoryBadge) inventoryBadge.innerText = holding;
+  // Show win banner when player is holding a token of value 8 (2^3)
+  const hasWinToken = heldToken && 2 ** heldToken.exp === 8;
+  if (hasWinToken) {
+    hasWon = true;
+    winBanner.classList.add("show-win");
+  } else {
+    hasWon = false;
+    winBanner.classList.remove("show-win");
+  }
 }
 
 // Initialize status panel
@@ -140,18 +186,19 @@ function spawnTokensForViewport() {
 
       // Determine deterministic token value for this cell using a rarity distribution
       const vRand = luck(key + ":value");
-      let value = 1;
-      for (let v = 1; v <= TOKEN_MAX_VALUE; v++) {
-        if (vRand < VALUE_DISTRIBUTION[v]) {
-          value = v;
+      // choose exponent deterministically using distribution
+      let exp = 0;
+      for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
+        if (vRand < EXP_DISTRIBUTION[e]) {
+          exp = e;
           break;
         }
       }
 
-      // Use a separate luck call for spawn so value rarity influences spawn chance
+      // Use a separate luck call for spawn so rarity influences spawn chance
       const spawnRand = luck(key + ":spawn");
       const spawnThreshold = TOKEN_SPAWN_PROBABILITY *
-        VALUE_SPAWN_MULTIPLIER[value];
+        EXP_SPAWN_MULTIPLIER[exp];
       if (spawnRand < spawnThreshold) {
         // Compute lat/lng bounds for this tile at base zoom
         const nwTile = leaflet.point(tx * GRID_SIZE, ty * GRID_SIZE);
@@ -166,8 +213,7 @@ function spawnTokensForViewport() {
           seLatLng.lng,
         ]]);
 
-        // Filled rectangle to represent a token occupying the whole grid space
-        // Use uniform coloring for tokens (restore original colors)
+        // Token
         const rect = leaflet.rectangle(tileBounds, {
           weight: 1,
           color: "#cc6600",
@@ -175,7 +221,7 @@ function spawnTokensForViewport() {
           fillOpacity: 0.2,
         });
 
-        // Show the token's value as a permanent centered tooltip
+        const value = 2 ** exp;
         rect.bindTooltip(String(value), {
           permanent: true,
           direction: "center",
@@ -183,6 +229,14 @@ function spawnTokensForViewport() {
         });
 
         rect.on("click", (e: LeafletMouseEvent) => {
+          if (hasWon) {
+            const popup = leaflet.popup({ closeButton: false, autoClose: true })
+              .setLatLng(e.latlng)
+              .setContent("Game complete — press Play again to continue");
+            popup.openOn(map);
+            setTimeout(() => map.closePopup(popup), 900);
+            return;
+          }
           // Determine player's tile at the base zoom so collection is stable across zooms
           const playerLatLng = playerMarker.getLatLng();
           const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
@@ -194,24 +248,56 @@ function spawnTokensForViewport() {
           const gridDist = Math.max(dx, dy); // Chebyshev distance (gridspaces)
 
           if (gridDist <= COLLECTION_RANGE) {
-            // If already holding a token, prevent picking up another
+            // If already holding a token
             if (heldToken) {
-              const popup = leaflet.popup({
-                closeButton: false,
-                autoClose: true,
-              })
-                .setLatLng(e.latlng)
-                .setContent(
-                  `You are already carrying a token (value ${heldToken.value})`,
-                );
-              popup.openOn(map);
-              setTimeout(() => map.closePopup(popup), 900);
+              // If held exponent matches map exponent, attempt to deposit/merge
+              if (heldToken.exp === exp) {
+                if (exp < TOKEN_MAX_EXP) {
+                  // merge: increment exponent on the map token
+                  exp = exp + 1;
+                  const newValue = 2 ** exp;
+                  // update tooltip
+                  rect.unbindTooltip();
+                  rect.bindTooltip(String(newValue), {
+                    permanent: true,
+                    direction: "center",
+                    className: "token-label",
+                  });
+                  // update stored exponent for this tile
+                  tokensMap.set(key, { layer: rect, exp });
+                  // consume held token
+                  heldToken = null;
+                  updateStatusPanel();
+                } else {
+                  const popup = leaflet.popup({
+                    closeButton: false,
+                    autoClose: true,
+                  })
+                    .setLatLng(e.latlng)
+                    .setContent(`Token already at max value`);
+                  popup.openOn(map);
+                  setTimeout(() => map.closePopup(popup), 900);
+                }
+              } else {
+                const popup = leaflet.popup({
+                  closeButton: false,
+                  autoClose: true,
+                })
+                  .setLatLng(e.latlng)
+                  .setContent(
+                    `You are already carrying a different token (value ${
+                      2 ** heldToken.exp
+                    })`,
+                  );
+                popup.openOn(map);
+                setTimeout(() => map.closePopup(popup), 900);
+              }
             } else {
               // Pick up token into the single-slot inventory (do not award points now)
               tokensLayer.removeLayer(rect);
               tokensMap.delete(key);
               collectedSet.add(key);
-              heldToken = { key, value };
+              heldToken = { key, exp };
               updateStatusPanel();
             }
           } else {
@@ -225,7 +311,7 @@ function spawnTokensForViewport() {
           }
         });
 
-        tokensMap.set(key, { layer: rect, value });
+        tokensMap.set(key, { layer: rect, exp });
         tokensLayer.addLayer(rect);
       }
     }

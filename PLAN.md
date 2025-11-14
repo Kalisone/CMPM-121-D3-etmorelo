@@ -28,7 +28,8 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] implement proximity & collection logic (clickhandlers with proxycheck)
 - [x] give tokens different values
 - [x] implement player inventory & inventory display system
-- [ ] implement crafting system: player combines 2 tokens of same value
+- [x] implement crafting system: player combines 2 tokens of same value
+- [x] implemented win condition: player has token of value x
 
 ### D3.b
 
