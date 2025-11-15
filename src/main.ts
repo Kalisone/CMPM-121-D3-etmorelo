@@ -1,5 +1,5 @@
 // @deno-types="npm:@types/leaflet"
-import type { LeafletMouseEvent } from "leaflet";
+import type { LatLng, LeafletMouseEvent } from "leaflet";
 import leaflet from "leaflet";
 
 // Style sheets
@@ -10,6 +10,18 @@ import "./style.css"; // student-controlled page style
 import "./_leafletWorkaround.ts"; // fixes for missing Leaflet images
 // Import our luck function for deterministic randomness
 import luck from "./_luck.ts";
+
+// Interfaces for tokens and game state
+interface Token {
+  key: string;
+  exp: number;
+}
+
+interface GameState {
+  heldToken: Token | null;
+  collectedSet: Set<string>;
+  hasWon: boolean;
+}
 
 // Create basic UI elements
 const controlPanelDiv = document.createElement("div");
@@ -40,13 +52,18 @@ winBanner.innerHTML = `
 winBanner.style.display = "none";
 mapDiv.append(winBanner);
 
-let hasWon = false;
+// Centralized game state
+const gameState: GameState = {
+  heldToken: null,
+  collectedSet: new Set<string>(),
+  hasWon: false,
+};
 
 // Play again handler: clear collected/held state and respawn tokens
 function playAgain() {
-  hasWon = false;
-  heldToken = null;
-  collectedSet.clear();
+  gameState.hasWon = false;
+  gameState.heldToken = null;
+  gameState.collectedSet.clear();
   tokensLayer.clearLayers();
   tokensMap.clear();
   updateStatusPanel();
@@ -67,7 +84,12 @@ const CLASSROOM_LATLNG = leaflet.latLng(
 
 // Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
-const GRID_SIZE = 60;
+// Pixel size for each map tile / grid cell
+const TILE_SIZE_PX = 60;
+// How many gridspaces away the player may interact with tokens
+const PROXIMITY_DETECT_RADIUS = 20;
+// Default duration for short spawn/notification popups (ms)
+const SPAWN_ANIMATION_DURATION_MS = 900;
 
 // //// //// //// //// //// ////
 // MAP
@@ -117,37 +139,46 @@ for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
   EXP_DISTRIBUTION.push(acc);
 }
 const EXP_SPAWN_MULTIPLIER = _expWeights.map((w) => w / _expWeights[0]);
-const PROXI_DETECT_RANGE = 20;
 
 // Layer to hold token markers (persist across view changes)
 const tokensLayer = leaflet.layerGroup().addTo(map);
-// In-memory collected tokens (session-only).
-const collectedSet = new Set<string>();
 // Map of tokens keyed by base world-tile (tx:ty); stores layer + exponent
 const tokensMap = new Map<string, { layer: leaflet.Layer; exp: number }>();
-// Single-slot inventory: player can hold at most one token at a time (store exponent)
-let heldToken: { key: string; exp: number } | null = null;
 
 function updateStatusPanel() {
-  const holding = heldToken
-    ? `Holding: ${2 ** heldToken.exp}`
+  const holding = gameState.heldToken
+    ? `Holding: ${2 ** gameState.heldToken.exp}`
     : "Holding: none";
   statusPanelDiv.innerHTML = `${holding}`;
   // Also update the on-map inventory badge
   if (inventoryBadge) inventoryBadge.innerText = holding;
-  // Show win banner when player is holding a token of value 8 (2^3)
-  const hasWinToken = heldToken && 2 ** heldToken.exp === WIN_VALUE;
+  // Show win banner when player is holding the max-value token
+  const hasWinToken = gameState.heldToken &&
+    2 ** gameState.heldToken.exp === WIN_VALUE;
   if (hasWinToken) {
-    hasWon = true;
+    gameState.hasWon = true;
     winBanner.classList.add("show-win");
   } else {
-    hasWon = false;
+    gameState.hasWon = false;
     winBanner.classList.remove("show-win");
   }
 }
 
 // Initialize status panel
 updateStatusPanel();
+
+// Small helper to show a temporary popup at a given location and auto-close it.
+function openTempPopup(
+  latlng: LatLng,
+  content: string,
+  duration = SPAWN_ANIMATION_DURATION_MS,
+) {
+  const popup = leaflet.popup({ closeButton: false, autoClose: true })
+    .setLatLng(latlng)
+    .setContent(content);
+  popup.openOn(map);
+  setTimeout(() => map.closePopup(popup), duration);
+}
 
 // Spawn tokens for the currently visible world-tile cells.
 function spawnTokensForViewport() {
@@ -160,17 +191,17 @@ function spawnTokensForViewport() {
   const nwPt = map.project(nw, baseZoom);
   const sePt = map.project(se, baseZoom);
 
-  const minX = Math.floor(Math.min(nwPt.x, sePt.x) / GRID_SIZE);
-  const maxX = Math.floor((Math.max(nwPt.x, sePt.x) - 1) / GRID_SIZE);
-  const minY = Math.floor(Math.min(nwPt.y, sePt.y) / GRID_SIZE);
-  const maxY = Math.floor((Math.max(nwPt.y, sePt.y) - 1) / GRID_SIZE);
+  const minX = Math.floor(Math.min(nwPt.x, sePt.x) / TILE_SIZE_PX);
+  const maxX = Math.floor((Math.max(nwPt.x, sePt.x) - 1) / TILE_SIZE_PX);
+  const minY = Math.floor(Math.min(nwPt.y, sePt.y) / TILE_SIZE_PX);
+  const maxY = Math.floor((Math.max(nwPt.y, sePt.y) - 1) / TILE_SIZE_PX);
 
   for (let tx = minX; tx <= maxX; tx++) {
     for (let ty = minY; ty <= maxY; ty++) {
       const key = `${tx}:${ty}`;
 
       // Don't spawn if already collected
-      if (collectedSet.has(key)) continue;
+      if (gameState.collectedSet.has(key)) continue;
 
       // If token already exists for this cell, ensure it's in the layer and continue
       if (tokensMap.has(key)) {
@@ -198,10 +229,10 @@ function spawnTokensForViewport() {
         EXP_SPAWN_MULTIPLIER[exp];
       if (spawnRand < spawnThreshold) {
         // Compute lat/lng bounds for this tile at base zoom
-        const nwTile = leaflet.point(tx * GRID_SIZE, ty * GRID_SIZE);
+        const nwTile = leaflet.point(tx * TILE_SIZE_PX, ty * TILE_SIZE_PX);
         const seTile = leaflet.point(
-          (tx + 1) * GRID_SIZE,
-          (ty + 1) * GRID_SIZE,
+          (tx + 1) * TILE_SIZE_PX,
+          (ty + 1) * TILE_SIZE_PX,
         );
         const nwLatLng = map.unproject(nwTile, baseZoom);
         const seLatLng = map.unproject(seTile, baseZoom);
@@ -226,7 +257,7 @@ function spawnTokensForViewport() {
         });
 
         rect.on("click", (e: LeafletMouseEvent) => {
-          if (hasWon) {
+          if (gameState.hasWon) {
             const popup = leaflet.popup({ closeButton: false, autoClose: true })
               .setLatLng(e.latlng)
               .setContent("Game complete — press Play again to continue");
@@ -237,18 +268,18 @@ function spawnTokensForViewport() {
           // Determine player's tile at the base zoom so collection is stable across zooms
           const playerLatLng = playerMarker.getLatLng();
           const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
-          const playerTx = Math.floor(playerPt.x / GRID_SIZE);
-          const playerTy = Math.floor(playerPt.y / GRID_SIZE);
+          const playerTx = Math.floor(playerPt.x / TILE_SIZE_PX);
+          const playerTy = Math.floor(playerPt.y / TILE_SIZE_PX);
 
           const dx = Math.abs(tx - playerTx);
           const dy = Math.abs(ty - playerTy);
           const gridDist = Math.max(dx, dy); // Chebyshev distance (gridspaces)
 
-          if (gridDist <= PROXI_DETECT_RANGE) {
+          if (gridDist <= PROXIMITY_DETECT_RADIUS) {
             // If already holding a token
-            if (heldToken) {
+            if (gameState.heldToken) {
               // If held exponent matches map exponent, attempt to deposit/merge
-              if (heldToken.exp === exp) {
+              if (gameState.heldToken!.exp === exp) {
                 if (exp < TOKEN_MAX_EXP) {
                   // merge: increment exponent on the map token
                   exp = exp + 1;
@@ -263,48 +294,30 @@ function spawnTokensForViewport() {
                   // update stored exponent for this tile
                   tokensMap.set(key, { layer: rect, exp });
                   // consume held token
-                  heldToken = null;
+                  gameState.heldToken = null;
                   updateStatusPanel();
                 } else {
-                  const popup = leaflet.popup({
-                    closeButton: false,
-                    autoClose: true,
-                  })
-                    .setLatLng(e.latlng)
-                    .setContent(`Token already at max value`);
-                  popup.openOn(map);
-                  setTimeout(() => map.closePopup(popup), 900);
+                  openTempPopup(e.latlng, `Token already at max value`);
                 }
               } else {
-                const popup = leaflet.popup({
-                  closeButton: false,
-                  autoClose: true,
-                })
-                  .setLatLng(e.latlng)
-                  .setContent(
-                    `You are already carrying a different token (value ${
-                      2 ** heldToken.exp
-                    })`,
-                  );
-                popup.openOn(map);
-                setTimeout(() => map.closePopup(popup), 900);
+                openTempPopup(
+                  e.latlng,
+                  `You are already carrying a different token (value ${
+                    2 ** gameState.heldToken!.exp
+                  })`,
+                );
               }
             } else {
               // Pick up token into the single-slot inventory (do not award points now)
               tokensLayer.removeLayer(rect);
               tokensMap.delete(key);
-              collectedSet.add(key);
-              heldToken = { key, exp };
+              gameState.collectedSet.add(key);
+              gameState.heldToken = { key, exp };
               updateStatusPanel();
             }
           } else {
             // Show a temporary popup indicating token is too far
-            const popup = leaflet.popup({ closeButton: false, autoClose: true })
-              .setLatLng(e.latlng)
-              .setContent(`Too far — ${gridDist} gridspaces away`);
-            popup.openOn(map);
-            // Auto-close after a short delay
-            setTimeout(() => map.closePopup(popup), 900);
+            openTempPopup(e.latlng, `Too far — ${gridDist} gridspaces away`);
           }
         });
 
@@ -339,5 +352,5 @@ leaflet.gridLayer = function (opts) {
 };
 
 map.addLayer(leaflet.gridLayer({
-  tileSize: GRID_SIZE,
+  tileSize: TILE_SIZE_PX,
 }));
