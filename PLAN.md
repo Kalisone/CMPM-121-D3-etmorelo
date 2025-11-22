@@ -40,8 +40,8 @@ Key gameplay challenge: Can players move around the map or scroll the map withou
 
 - [x] represent gridspaces with interface
 - [x] center grid cells with null island (latlong 0, 0)
-- [] add basic directional buttons to the map interface
-- [] make buttons move player by 1 grid space
-- [] add a free look button to allow player to choose whether the camera follows the player or moves freely
+- [x] add basic directional buttons to the map interface
+- [x] make buttons move player by 1 grid space
+- [x] add a free look button to allow player to choose whether the camera follows the player or moves freely
 
 ...

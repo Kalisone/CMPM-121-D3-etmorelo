@@ -32,15 +32,15 @@ interface GridCell {
 // Create basic UI elements
 const controlPanelDiv = document.createElement("div");
 controlPanelDiv.id = "controlPanel";
-document.body.append(controlPanelDiv);
 
 const mapDiv = document.createElement("div");
 mapDiv.id = "map";
 document.body.append(mapDiv);
 
-const statusPanelDiv = document.createElement("div");
-statusPanelDiv.id = "statusPanel";
-document.body.append(statusPanelDiv);
+// Put the control panel inside the map so it overlays the map area
+mapDiv.append(controlPanelDiv);
+
+// statusPanelDiv removed: we only show holding text as an overlay on the map
 
 // Inventory badge shown over the map canvas
 const inventoryBadge = document.createElement("div");
@@ -117,8 +117,201 @@ leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 
 // Add a marker to represent the player
 const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
-playerMarker.bindTooltip("Player");
+playerMarker.bindTooltip("Cell ", {
+  permanent: false,
+  direction: "top",
+  className: "player-label",
+});
 playerMarker.addTo(map);
+
+updatePlayerTooltip();
+
+playerMarker.on("mouseover", () => {
+  updatePlayerTooltip();
+  playerMarker.openTooltip();
+});
+
+playerMarker.on("mouseout", () => {
+  playerMarker.closeTooltip();
+});
+
+// On click, update and show the tooltip (do not pin it)
+playerMarker.on("click", () => {
+  updatePlayerTooltip();
+  playerMarker.openTooltip();
+});
+
+updatePlayerTooltip();
+
+// //// //// //// //// //// ////
+// BUTTONS
+// //// //// //// //// //// ////
+
+const EYE_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
+    <circle cx="12" cy="12" r="3"></circle>
+  </svg>
+`;
+
+const PIN_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 10c0 6-9 13-9 13S3 16 3 10a9 9 0 1118 0z"></path>
+    <circle cx="12" cy="10" r="2"></circle>
+  </svg>
+`;
+
+const controlsContainer = document.createElement("div");
+controlsContainer.id = "directionalControls";
+controlsContainer.className = "directional-controls";
+
+let freeLook = false;
+
+function setFreeLook(enabled: boolean) {
+  freeLook = enabled;
+
+  if (!enabled) {
+    map.dragging.disable();
+    map.touchZoom.disable();
+    map.doubleClickZoom.disable();
+    map.boxZoom.disable();
+    map.keyboard.disable();
+    map.scrollWheelZoom.disable();
+
+    const playerLatLng = playerMarker.getLatLng();
+    map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+  } else {
+    map.dragging.enable();
+    map.touchZoom.enable();
+    map.doubleClickZoom.enable();
+    map.boxZoom.enable();
+    map.keyboard.enable();
+    map.scrollWheelZoom.enable();
+  }
+}
+
+const buttons: HTMLButtonElement[] = [];
+
+for (let i = 0; i < 5; i++) {
+  buttons.push(document.createElement("button"));
+  buttons[i].type = "button";
+}
+
+buttons[0].innerText = "↑";
+buttons[1].innerText = "←";
+buttons[2].innerText = "→";
+buttons[3].innerText = "↓";
+buttons[4].innerHTML = PIN_SVG;
+
+// Helper: move player by a grid delta (dx,dj)
+function movePlayerBy(dx: number, dy: number) {
+  const current = playerMarker.getLatLng();
+  const currentPt = map.project(current, GAMEPLAY_ZOOM_LEVEL);
+
+  const relX = currentPt.x - WORLD_ORIGIN_POINT.x;
+  const relY = currentPt.y - WORLD_ORIGIN_POINT.y;
+
+  const newRelX = relX + dx * TILE_SIZE_PX;
+  const newRelY = relY + dy * TILE_SIZE_PX;
+
+  const newWorldX = WORLD_ORIGIN_POINT.x + newRelX;
+  const newWorldY = WORLD_ORIGIN_POINT.y + newRelY;
+  const newLatLng = map.unproject(
+    leaflet.point(newWorldX, newWorldY),
+    GAMEPLAY_ZOOM_LEVEL,
+  );
+
+  playerMarker.setLatLng(newLatLng);
+  updatePlayerTooltip();
+
+  // Recenter camera only when freeLook is disabled
+  if (!freeLook) {
+    map.setView(newLatLng, GAMEPLAY_ZOOM_LEVEL);
+  }
+
+  spawnTokens();
+}
+
+// Update the player's marker tooltip to show the grid cell the player is currently in.
+function updatePlayerTooltip() {
+  try {
+    const latlng = playerMarker.getLatLng();
+    const cell = _latLngToGridCell(latlng);
+    const content = `Player ${gridCellKey(cell)}`;
+    const t = playerMarker.getTooltip();
+    if (t) {
+      t.setContent(content);
+    } else {
+      playerMarker.bindTooltip(content, {
+        permanent: false,
+        direction: "top",
+        className: "player-label",
+      });
+    }
+  } catch (error) {
+    console.log("Error updating player tooltip", error);
+  }
+}
+
+for (let idx = 0; idx < buttons.length; idx++) {
+  const button = buttons[idx];
+  if (idx !== 4) {
+    button.className = "directional-button";
+    button.setAttribute("aria-pressed", "false");
+    button.addEventListener("click", () => {
+      switch (idx) {
+        case 0: // up
+          movePlayerBy(0, -1);
+          break;
+        case 1: // left
+          movePlayerBy(-1, 0);
+          break;
+        case 2: // right
+          movePlayerBy(1, 0);
+          break;
+        case 3: // down
+          movePlayerBy(0, 1);
+          break;
+      }
+      // brief press feedback
+      button.setAttribute("aria-pressed", "true");
+      setTimeout(() => button.setAttribute("aria-pressed", "false"), 150);
+    });
+  } else {
+    // free-look toggle: use global `freeLook` state via setFreeLook
+    button.setAttribute("aria-pressed", String(freeLook));
+    button.addEventListener("click", () => {
+      const newState = !freeLook;
+      setFreeLook(newState);
+      button.innerHTML = newState ? EYE_SVG : PIN_SVG;
+      button.setAttribute("aria-pressed", String(newState));
+    });
+  }
+}
+
+// Arrange buttons visually: up above, left/center/right in a row, down below.
+const rowTop = document.createElement("div");
+rowTop.className = "directional-row row-top";
+rowTop.appendChild(buttons[0]);
+
+const rowMiddle = document.createElement("div");
+rowMiddle.className = "directional-row row-middle";
+rowMiddle.appendChild(buttons[1]);
+rowMiddle.appendChild(buttons[4]);
+rowMiddle.appendChild(buttons[2]);
+
+const rowBottom = document.createElement("div");
+rowBottom.className = "directional-row row-bottom";
+rowBottom.appendChild(buttons[3]);
+
+controlsContainer.appendChild(rowTop);
+controlsContainer.appendChild(rowMiddle);
+controlsContainer.appendChild(rowBottom);
+
+controlPanelDiv.appendChild(controlsContainer);
+
+// Apply initial freeLook state (locked by default)
+setFreeLook(freeLook);
 
 // //// //// //// //// //// ////
 // TOKEN SPAWNING
@@ -159,7 +352,6 @@ function updateStatusPanel() {
   const holding = gameState.heldToken
     ? `Holding: ${2 ** gameState.heldToken.exp}`
     : "Holding: none";
-  statusPanelDiv.innerHTML = `${holding}`;
   // Also update the on-map inventory badge
   if (inventoryBadge) inventoryBadge.innerText = holding;
   // Show win banner when player is holding the max-value token
