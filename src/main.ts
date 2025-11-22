@@ -91,7 +91,7 @@ const CLASSROOM_LATLNG = leaflet.latLng(
 // Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
 const TILE_SIZE_PX = 60;
-const PROXIMITY_DETECT_RADIUS = 20;
+const PROXIMITY_DETECT_RADIUS = 6;
 const SPAWN_ANIMATION_DURATION_MS = 900;
 
 // //// //// //// //// //// ////
@@ -106,6 +106,10 @@ const map = leaflet.map(mapDiv, {
   maxZoom: GAMEPLAY_ZOOM_LEVEL,
   zoomControl: false,
   scrollWheelZoom: false,
+  touchZoom: false,
+  doubleClickZoom: false,
+  boxZoom: false,
+  keyboard: false,
 });
 
 // Populate the map with a background tile layer
@@ -172,21 +176,10 @@ function setFreeLook(enabled: boolean) {
 
   if (!enabled) {
     map.dragging.disable();
-    map.touchZoom.disable();
-    map.doubleClickZoom.disable();
-    map.boxZoom.disable();
-    map.keyboard.disable();
-    map.scrollWheelZoom.disable();
 
-    const playerLatLng = playerMarker.getLatLng();
-    map.setView(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+    map.setView(playerMarker.getLatLng(), GAMEPLAY_ZOOM_LEVEL);
   } else {
     map.dragging.enable();
-    map.touchZoom.enable();
-    map.doubleClickZoom.enable();
-    map.boxZoom.enable();
-    map.keyboard.enable();
-    map.scrollWheelZoom.enable();
   }
 }
 
@@ -410,10 +403,7 @@ function spawnTokens() {
   }
 }
 
-// Compute Chebyshev grid distance (in tile units) from the player to a cell.
-// This isolates the projection and distance math so it can be reused/tested.
-// Compute Chebyshev grid distance (in tile units) from the player to a cell.
-// Uses the `GridCell` abstraction so callers don't need map math.
+// Compute Manhattan grid distance (in tile units) from the player to a cell.
 function gridDistanceToPlayer(cell: GridCell): number {
   const playerLatLng = playerMarker.getLatLng();
   const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
@@ -423,7 +413,7 @@ function gridDistanceToPlayer(cell: GridCell): number {
   const playerJ = Math.floor(relY / TILE_SIZE_PX);
   const dx = Math.abs(cell.i - playerI);
   const dy = Math.abs(cell.j - playerJ);
-  return Math.max(dx, dy);
+  return dx + dy;
 }
 
 // Utility: stable string key for a grid cell
