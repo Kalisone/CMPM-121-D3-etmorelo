@@ -29,6 +29,7 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 - [x] give tokens different values
 - [x] implement player inventory & inventory display system
 - [x] implement crafting system: player combines 2 tokens of same value
+- [x] implemented win condition: player has token of value x
 
 ### D3.b
 
@@ -37,8 +38,9 @@ Key gameplay challenge: Can players move around the map or scroll the map withou
 
 ### D3.b Steps
 
-- [x] implemented win condition: player has token of value x
-- [] add basic directional buttons to the map interface.
+- [x] represent gridspaces with interface
+- [x] center grid cells with null island (latlong 0, 0)
+- [] add basic directional buttons to the map interface
 - [] make buttons move player by 1 grid space
 - [] add a free look button to allow player to choose whether the camera follows the player or moves freely
 

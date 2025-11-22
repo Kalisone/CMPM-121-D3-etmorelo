@@ -23,6 +23,12 @@ interface GameState {
   hasWon: boolean;
 }
 
+// Grid cell abstraction: integer grid coordinates independent of screen representation
+interface GridCell {
+  i: number; // x/tile index
+  j: number; // y/tile index
+}
+
 // Create basic UI elements
 const controlPanelDiv = document.createElement("div");
 controlPanelDiv.id = "controlPanel";
@@ -67,7 +73,7 @@ function playAgain() {
   tokensLayer.clearLayers();
   tokensMap.clear();
   updateStatusPanel();
-  spawnTokensForViewport();
+  spawnTokens();
 }
 
 // Attach listener to the Play Again button once the element exists
@@ -84,11 +90,8 @@ const CLASSROOM_LATLNG = leaflet.latLng(
 
 // Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
-// Pixel size for each map tile / grid cell
 const TILE_SIZE_PX = 60;
-// How many gridspaces away the player may interact with tokens
 const PROXIMITY_DETECT_RADIUS = 20;
-// Default duration for short spawn/notification popups (ms)
 const SPAWN_ANIMATION_DURATION_MS = 900;
 
 // //// //// //// //// //// ////
@@ -120,6 +123,13 @@ playerMarker.addTo(map);
 // //// //// //// //// //// ////
 // TOKEN SPAWNING
 // //// //// //// //// //// ////
+
+// World-origin point (pixel coordinates) for lat=0,lng=0 at our game zoom.
+// This makes gridspace (0,0) correspond to geographic (0,0) — "null island".
+const WORLD_ORIGIN_POINT = map.project(
+  leaflet.latLng(0, 0),
+  GAMEPLAY_ZOOM_LEVEL,
+);
 
 // Token spawning parameters
 const TOKEN_SPAWN_PROBABILITY = 0.12;
@@ -181,168 +191,248 @@ function openTempPopup(
 }
 
 // Spawn tokens for the currently visible world-tile cells.
-function spawnTokensForViewport() {
-  const baseZoom = GAMEPLAY_ZOOM_LEVEL;
+function spawnTokens() {
   const bounds = map.getBounds();
 
   const nw = bounds.getNorthWest();
   const se = bounds.getSouthEast();
 
-  const nwPt = map.project(nw, baseZoom);
-  const sePt = map.project(se, baseZoom);
+  const nwPt = map.project(nw, GAMEPLAY_ZOOM_LEVEL);
+  const sePt = map.project(se, GAMEPLAY_ZOOM_LEVEL);
 
-  const minX = Math.floor(Math.min(nwPt.x, sePt.x) / TILE_SIZE_PX);
-  const maxX = Math.floor((Math.max(nwPt.x, sePt.x) - 1) / TILE_SIZE_PX);
-  const minY = Math.floor(Math.min(nwPt.y, sePt.y) / TILE_SIZE_PX);
-  const maxY = Math.floor((Math.max(nwPt.y, sePt.y) - 1) / TILE_SIZE_PX);
+  // Compute positions relative to WORLD_ORIGIN_POINT so grid (0,0) == lat/lng (0,0)
+  const nwRelX = nwPt.x - WORLD_ORIGIN_POINT.x;
+  const seRelX = sePt.x - WORLD_ORIGIN_POINT.x;
+  const nwRelY = nwPt.y - WORLD_ORIGIN_POINT.y;
+  const seRelY = sePt.y - WORLD_ORIGIN_POINT.y;
 
-  for (let tx = minX; tx <= maxX; tx++) {
-    for (let ty = minY; ty <= maxY; ty++) {
-      const key = `${tx}:${ty}`;
+  const minI = Math.floor(Math.min(nwRelX, seRelX) / TILE_SIZE_PX);
+  const maxI = Math.floor((Math.max(nwRelX, seRelX) - 1) / TILE_SIZE_PX);
+  const minJ = Math.floor(Math.min(nwRelY, seRelY) / TILE_SIZE_PX);
+  const maxJ = Math.floor((Math.max(nwRelY, seRelY) - 1) / TILE_SIZE_PX);
 
-      // Don't spawn if already collected
-      if (gameState.collectedSet.has(key)) continue;
-
-      // If token already exists for this cell, ensure it's in the layer and continue
-      if (tokensMap.has(key)) {
-        const existing = tokensMap.get(key)!;
-        if (!tokensLayer.hasLayer(existing.layer)) {
-          tokensLayer.addLayer(existing.layer);
-        }
-        continue;
-      }
-
-      // Determine deterministic token value for this cell using a rarity distribution
-      const vRand = luck(key + ":value");
-      // choose exponent deterministically using distribution
-      let exp = 0;
-      for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
-        if (vRand < EXP_DISTRIBUTION[e]) {
-          exp = e;
-          break;
-        }
-      }
-
-      // Use a separate luck call for spawn so rarity influences spawn chance
-      const spawnRand = luck(key + ":spawn");
-      const spawnThreshold = TOKEN_SPAWN_PROBABILITY *
-        EXP_SPAWN_MULTIPLIER[exp];
-      if (spawnRand < spawnThreshold) {
-        // Compute lat/lng bounds for this tile at base zoom
-        const nwTile = leaflet.point(tx * TILE_SIZE_PX, ty * TILE_SIZE_PX);
-        const seTile = leaflet.point(
-          (tx + 1) * TILE_SIZE_PX,
-          (ty + 1) * TILE_SIZE_PX,
-        );
-        const nwLatLng = map.unproject(nwTile, baseZoom);
-        const seLatLng = map.unproject(seTile, baseZoom);
-        const tileBounds = leaflet.latLngBounds([[nwLatLng.lat, nwLatLng.lng], [
-          seLatLng.lat,
-          seLatLng.lng,
-        ]]);
-
-        // Token
-        const rect = leaflet.rectangle(tileBounds, {
-          weight: 1,
-          color: "#cc6600",
-          fillColor: "#ff7f0e",
-          fillOpacity: 0.2,
-        });
-
-        const value = 2 ** exp;
-        rect.bindTooltip(String(value), {
-          permanent: true,
-          direction: "center",
-          className: "token-label",
-        });
-
-        rect.on("click", (e: LeafletMouseEvent) => {
-          if (gameState.hasWon) {
-            const popup = leaflet.popup({ closeButton: false, autoClose: true })
-              .setLatLng(e.latlng)
-              .setContent("Game complete — press Play again to continue");
-            popup.openOn(map);
-            setTimeout(() => map.closePopup(popup), 900);
-            return;
-          }
-          // Determine player's tile at the base zoom so collection is stable across zooms
-          const playerLatLng = playerMarker.getLatLng();
-          const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
-          const playerTx = Math.floor(playerPt.x / TILE_SIZE_PX);
-          const playerTy = Math.floor(playerPt.y / TILE_SIZE_PX);
-
-          const dx = Math.abs(tx - playerTx);
-          const dy = Math.abs(ty - playerTy);
-          const gridDist = Math.max(dx, dy); // Chebyshev distance (gridspaces)
-
-          if (gridDist <= PROXIMITY_DETECT_RADIUS) {
-            // If already holding a token
-            if (gameState.heldToken) {
-              // If held exponent matches map exponent, attempt to deposit/merge
-              if (gameState.heldToken!.exp === exp) {
-                if (exp < TOKEN_MAX_EXP) {
-                  // merge: increment exponent on the map token
-                  exp = exp + 1;
-                  const newValue = 2 ** exp;
-                  // update tooltip
-                  rect.unbindTooltip();
-                  rect.bindTooltip(String(newValue), {
-                    permanent: true,
-                    direction: "center",
-                    className: "token-label",
-                  });
-                  // update stored exponent for this tile
-                  tokensMap.set(key, { layer: rect, exp });
-                  // consume held token
-                  gameState.heldToken = null;
-                  updateStatusPanel();
-                } else {
-                  openTempPopup(e.latlng, `Token already at max value`);
-                }
-              } else {
-                openTempPopup(
-                  e.latlng,
-                  `You are already carrying a different token (value ${
-                    2 ** gameState.heldToken!.exp
-                  })`,
-                );
-              }
-            } else {
-              // Pick up token into the single-slot inventory (do not award points now)
-              tokensLayer.removeLayer(rect);
-              tokensMap.delete(key);
-              gameState.collectedSet.add(key);
-              gameState.heldToken = { key, exp };
-              updateStatusPanel();
-            }
-          } else {
-            // Show a temporary popup indicating token is too far
-            openTempPopup(e.latlng, `Too far — ${gridDist} gridspaces away`);
-          }
-        });
-
-        tokensMap.set(key, { layer: rect, exp });
-        tokensLayer.addLayer(rect);
-      }
+  for (let i = minI; i <= maxI; i++) {
+    for (let j = minJ; j <= maxJ; j++) {
+      trySpawnCell({ i, j });
     }
   }
 }
 
+// Compute Chebyshev grid distance (in tile units) from the player to a cell.
+// This isolates the projection and distance math so it can be reused/tested.
+// Compute Chebyshev grid distance (in tile units) from the player to a cell.
+// Uses the `GridCell` abstraction so callers don't need map math.
+function gridDistanceToPlayer(cell: GridCell): number {
+  const playerLatLng = playerMarker.getLatLng();
+  const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
+  const relX = playerPt.x - WORLD_ORIGIN_POINT.x;
+  const relY = playerPt.y - WORLD_ORIGIN_POINT.y;
+  const playerI = Math.floor(relX / TILE_SIZE_PX);
+  const playerJ = Math.floor(relY / TILE_SIZE_PX);
+  const dx = Math.abs(cell.i - playerI);
+  const dy = Math.abs(cell.j - playerJ);
+  return Math.max(dx, dy);
+}
+
+// Utility: stable string key for a grid cell
+function gridCellKey(cell: GridCell): string {
+  return `${cell.i}:${cell.j}`;
+}
+
+// Utility: parse a key back into a GridCell
+function _parseGridCellKey(key: string): GridCell {
+  const [iStr, jStr] = key.split(":");
+  return { i: Number(iStr), j: Number(jStr) };
+}
+
+// Convert a continuous LatLng into a GridCell at our base zoom / tile size
+function _latLngToGridCell(latlng: LatLng): GridCell {
+  const pt = map.project(latlng, GAMEPLAY_ZOOM_LEVEL);
+  const relX = pt.x - WORLD_ORIGIN_POINT.x;
+  const relY = pt.y - WORLD_ORIGIN_POINT.y;
+  const i = Math.floor(relX / TILE_SIZE_PX);
+  const j = Math.floor(relY / TILE_SIZE_PX);
+  return { i, j };
+}
+
+// Convert a GridCell into its NW (top-left) and SE (bottom-right) LatLng bounds
+// Return a Leaflet `LatLngBounds` for a grid cell (top-left -> bottom-right)
+function gridCellToLatLngBounds(cell: GridCell): leaflet.LatLngBounds {
+  // Convert cell coords into world pixel coordinates by adding the world-origin offset
+  const nwTile = leaflet.point(
+    WORLD_ORIGIN_POINT.x + cell.i * TILE_SIZE_PX,
+    WORLD_ORIGIN_POINT.y + cell.j * TILE_SIZE_PX,
+  );
+  const seTile = leaflet.point(
+    WORLD_ORIGIN_POINT.x + (cell.i + 1) * TILE_SIZE_PX,
+    WORLD_ORIGIN_POINT.y + (cell.j + 1) * TILE_SIZE_PX,
+  );
+  const nwLatLng = map.unproject(nwTile, GAMEPLAY_ZOOM_LEVEL);
+  const seLatLng = map.unproject(seTile, GAMEPLAY_ZOOM_LEVEL);
+  return leaflet.latLngBounds([
+    [nwLatLng.lat, nwLatLng.lng],
+    [seLatLng.lat, seLatLng.lng],
+  ]);
+}
+
+function trySpawnCell(cell: GridCell) {
+  const key = gridCellKey(cell);
+
+  // Don't spawn if already collected
+  if (gameState.collectedSet.has(key)) return;
+
+  // If token already exists for this cell, ensure it's in the layer and return
+  const existing = tokensMap.get(key);
+  if (existing) {
+    if (!tokensLayer.hasLayer(existing.layer)) {
+      tokensLayer.addLayer(existing.layer);
+    }
+    return;
+  }
+
+  // Determine deterministic token value for this cell using a rarity distribution
+  const vRand = luck(key + ":value");
+  let exp = 0;
+  for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
+    if (vRand < EXP_DISTRIBUTION[e]) {
+      exp = e;
+      break;
+    }
+  }
+
+  const spawnRand = luck(key + ":spawn");
+  const spawnThreshold = TOKEN_SPAWN_PROBABILITY * EXP_SPAWN_MULTIPLIER[exp];
+  if (!(spawnRand < spawnThreshold)) return;
+  // Create a rectangle snapped to the integer grid cell bounds
+  const rect = createTokenRectangle(cell, exp);
+
+  rect.on("click", (e: LeafletMouseEvent) => {
+    if (gameState.hasWon) {
+      const popup = leaflet.popup({ closeButton: false, autoClose: true })
+        .setLatLng(e.latlng)
+        .setContent("Game complete — press Play again to continue");
+      popup.openOn(map);
+      setTimeout(() => map.closePopup(popup), 900);
+      return;
+    }
+
+    const gridDist = gridDistanceToPlayer(cell);
+
+    if (gridDist <= PROXIMITY_DETECT_RADIUS) {
+      // If already holding a token
+      if (gameState.heldToken) {
+        // If held exponent matches map exponent, attempt to deposit/merge
+        if (gameState.heldToken!.exp === exp) {
+          if (exp < TOKEN_MAX_EXP) {
+            // merge: increment exponent on the map token
+            exp = exp + 1;
+            const newValue = 2 ** exp;
+            // update tooltip
+            const t = rect.getTooltip();
+            if (t) {
+              t.setContent(String(newValue));
+            } else {
+              rect.bindTooltip(String(newValue), {
+                permanent: true,
+                direction: "center",
+                className: "token-label",
+              });
+            }
+            // update stored exponent for this tile
+            tokensMap.set(key, { layer: rect, exp });
+            // consume held token
+            gameState.heldToken = null;
+            updateStatusPanel();
+          } else {
+            openTempPopup(e.latlng, `Token already at max value`);
+          }
+        } else {
+          openTempPopup(
+            e.latlng,
+            `You are already carrying a different token (value ${
+              2 ** gameState.heldToken!.exp
+            })`,
+          );
+        }
+      } else {
+        // Pick up token into the single-slot inventory (do not award points now)
+        tokensLayer.removeLayer(rect);
+        tokensMap.delete(key);
+        gameState.collectedSet.add(key);
+        gameState.heldToken = { key, exp };
+        updateStatusPanel();
+      }
+    } else {
+      // Show a temporary popup indicating token is too far
+      openTempPopup(e.latlng, `Too far — ${gridDist} gridspaces away`);
+    }
+  });
+
+  tokensMap.set(key, { layer: rect, exp });
+  tokensLayer.addLayer(rect);
+}
+
+// Create a token rectangle for a grid cell and bind a centered tooltip.
+function createTokenRectangle(cell: GridCell, exp: number) {
+  const bounds = gridCellToLatLngBounds(cell);
+  const rect = leaflet.rectangle(bounds, {
+    weight: 1,
+    color: "#cc6600",
+    fillColor: "#ff7f0e",
+    fillOpacity: 0.2,
+  });
+  // Ensure tooltip is anchored at the cell center for perfect alignment
+  const center = bounds.getCenter();
+  rect.bindTooltip(String(2 ** exp), {
+    permanent: true,
+    direction: "center",
+    className: "token-label",
+  });
+  // Force tooltip position to the exact center
+  const tooltip = rect.getTooltip();
+  if (tooltip) tooltip.setLatLng(center);
+  return rect;
+}
+
 // Refresh tokens when the view changes or the map is resized
-map.on("moveend", spawnTokensForViewport);
-map.on("zoomend", spawnTokensForViewport);
-map.on("resize", spawnTokensForViewport);
+map.on("moveend", spawnTokens);
+map.on("zoomend", spawnTokens);
+map.on("resize", spawnTokens);
 
 // Initial spawn
-spawnTokensForViewport();
+spawnTokens();
 
 // //// //// //// //// //// ////
 // GRID OVERLAY
 // //// //// //// //// //// ////
 leaflet.GridLayer = leaflet.GridLayer.extend({
-  createTile: function () {
+  createTile: function (coords: { x: number; y: number; z: number }) {
     const tile = document.createElement("div");
-    tile.style.outline = "1px solid orange";
+
+    const size = TILE_SIZE_PX;
+    // The tile's top-left in world pixel coordinates
+    const tilePixelX = coords.x * size;
+    const tilePixelY = coords.y * size;
+
+    // Compute how far this tile's top-left is from the world origin, modulo tile size
+    const offsetX = ((tilePixelX - WORLD_ORIGIN_POINT.x) % size + size) % size; // normalized 0..size-1
+    const offsetY = ((tilePixelY - WORLD_ORIGIN_POINT.y) % size + size) % size;
+
+    tile.style.width = `${size}px`;
+    tile.style.height = `${size}px`;
+    tile.style.pointerEvents = "none"; // allow clicks to hit the map
+    tile.style.backgroundImage =
+      `repeating-linear-gradient(to right, transparent 0 ${
+        size - 1
+      }px, orange ${
+        size - 1
+      }px ${size}px), repeating-linear-gradient(to bottom, transparent 0 ${
+        size - 1
+      }px, orange ${size - 1}px ${size}px)`;
+    tile.style.backgroundSize = `${size}px ${size}px, ${size}px ${size}px`;
+    tile.style.backgroundPosition =
+      `${-offsetX}px ${-offsetY}px, ${-offsetX}px ${-offsetY}px`;
+
     return tile;
   },
 });
@@ -354,3 +444,19 @@ leaflet.gridLayer = function (opts) {
 map.addLayer(leaflet.gridLayer({
   tileSize: TILE_SIZE_PX,
 }));
+
+// For testing: UI shows grid cell info when user clicks the map (uses our conversion helpers)
+/*
+map.on("click", (e: LeafletMouseEvent) => {
+  const cell = _latLngToGridCell(e.latlng);
+  const bounds = gridCellToLatLngBounds(cell);
+  const nw = bounds.getNorthWest();
+  const se = bounds.getSouthEast();
+  const content = `Cell: ${gridCellKey(cell)}<br/>NW: ${nw.lat.toFixed(6)}, ${
+    nw.lng.toFixed(6)
+  }<br/>SE: ${se.lat.toFixed(6)}, ${se.lng.toFixed(6)}`;
+  openTempPopup(e.latlng, content, 1600);
+});
+
+map.setView([0, 0], GAMEPLAY_ZOOM_LEVEL);
+*/
