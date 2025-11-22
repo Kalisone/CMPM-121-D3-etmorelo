@@ -73,7 +73,7 @@
 }
 
 #directionalControls .directional-row.row-middle > div {
-  width: 36px; /* spacer to center left/right */
+  width: 36px;
 }
 
 #directionalControls button {
@@ -91,7 +91,6 @@
   background: #f0f0f0;
 }
 
-/* Place control panel at bottom-left of the map by default */
 #controlPanel {
   position: absolute;
   left: 12px;

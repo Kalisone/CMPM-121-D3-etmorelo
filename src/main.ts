@@ -2,31 +2,228 @@
 import type { LatLng, LeafletMouseEvent } from "leaflet";
 import leaflet from "leaflet";
 
-// Style sheets
-import "leaflet/dist/leaflet.css"; // supporting style for Leaflet
-import "./style.css"; // student-controlled page style
-
-// Fix missing marker images
-import "./_leafletWorkaround.ts"; // fixes for missing Leaflet images
-// Import our luck function for deterministic randomness
+import "leaflet/dist/leaflet.css";
+import "./_leafletWorkaround.ts";
 import luck from "./_luck.ts";
+import "./style.css";
 
-// Interfaces for tokens and game state
 interface Token {
   key: string;
   exp: number;
 }
 
-interface GameState {
-  heldToken: Token | null;
-  collectedSet: Set<string>;
-  hasWon: boolean;
+class GameStateManager {
+  public heldToken: Token | null = null;
+  public collectedSet: Set<string> = new Set();
+  public hasWon = false;
+
+  constructor(
+    private readonly winValue: number,
+    private onStateChange: () => void,
+  ) {}
+
+  isCollected(key: string): boolean {
+    return this.collectedSet.has(key);
+  }
+
+  collectToken(token: Token) {
+    this.heldToken = token;
+    this.collectedSet.add(token.key);
+    this.checkWinCondition();
+    this.onStateChange();
+  }
+
+  upgradeHeldToken() {
+    if (this.heldToken) {
+      this.heldToken.exp++;
+      this.checkWinCondition();
+      this.onStateChange();
+    }
+  }
+
+  reset() {
+    this.heldToken = null;
+    this.collectedSet.clear();
+    this.hasWon = false;
+    this.onStateChange();
+  }
+
+  clearHeldToken() {
+    this.heldToken = null;
+    this.onStateChange();
+  }
+
+  private checkWinCondition() {
+    if (this.heldToken && (2 ** this.heldToken.exp) === this.winValue) {
+      this.hasWon = true;
+    }
+  }
 }
 
-// Grid cell abstraction: integer grid coordinates independent of screen representation
+class MapManager {
+  public map: leaflet.Map;
+  public playerMarker: leaflet.Marker;
+
+  constructor(elementId: string, center: leaflet.LatLng, zoom: number) {
+    this.map = leaflet.map(document.getElementById(elementId)!, {
+      center: center,
+      zoom: zoom,
+      minZoom: zoom,
+      maxZoom: zoom,
+      zoomControl: false,
+      doubleClickZoom: false,
+      boxZoom: false,
+      keyboard: false,
+      scrollWheelZoom: false,
+    });
+
+    // Background
+    leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap",
+    }).addTo(this.map);
+
+    // Player
+    this.playerMarker = leaflet.marker(center).addTo(this.map);
+    this.initPlayerTooltip();
+  }
+
+  public initPlayerTooltip() {
+    this.playerMarker.bindTooltip("Player", {
+      permanent: false,
+      direction: "top",
+      className: "player-label",
+    });
+  }
+
+  movePlayer(latLng: leaflet.LatLng) {
+    this.playerMarker.setLatLng(latLng);
+    this.map.setView(latLng);
+  }
+
+  updatePlayerStatus(text: string) {
+    this.playerMarker.setTooltipContent(text);
+  }
+
+  project(latlng: leaflet.LatLngExpression, zoom: number) {
+    return this.map.project(leaflet.latLng(latlng), zoom);
+  }
+
+  unproject(point: leaflet.Point, zoom: number) {
+    return this.map.unproject(point, zoom);
+  }
+
+  getBounds() {
+    return this.map.getBounds();
+  }
+
+  addLayer(layer: leaflet.Layer) {
+    this.map.addLayer(layer);
+  }
+
+  on<E = unknown>(event: string, handler: (e: E) => void) {
+    (this.map as unknown as { on: (evt: string, h: (e: E) => void) => void })
+      .on(event, handler);
+  }
+
+  openPopup(popup: leaflet.Popup) {
+    popup.openOn(this.map);
+  }
+
+  closePopup(popup: leaflet.Popup) {
+    this.map.closePopup(popup);
+  }
+
+  setView(latlng: leaflet.LatLngExpression, zoom?: number) {
+    this.map.setView(latlng, zoom);
+  }
+
+  enableDragging() {
+    this.map.dragging.enable();
+  }
+
+  disableDragging() {
+    this.map.dragging.disable();
+  }
+}
+
 interface GridCell {
-  i: number; // x/tile index
-  j: number; // y/tile index
+  i: number;
+  j: number;
+}
+
+class GridUtils {
+  private map: leaflet.Map;
+  private origin: leaflet.Point;
+  private zoom: number;
+  private tileSize: number;
+  private getPlayerLatLng: () => LatLng;
+
+  constructor(
+    map: leaflet.Map,
+    origin: leaflet.Point,
+    zoom: number,
+    tileSize: number,
+    getPlayerLatLng: () => LatLng,
+  ) {
+    this.map = map;
+    this.origin = origin;
+    this.zoom = zoom;
+    this.tileSize = tileSize;
+    this.getPlayerLatLng = getPlayerLatLng;
+  }
+
+  getKey(cell: GridCell): string {
+    return `${cell.i}:${cell.j}`;
+  }
+
+  parseKey(key: string): GridCell {
+    const [iStr, jStr] = key.split(":");
+    return { i: Number(iStr), j: Number(jStr) };
+  }
+
+  latLngToCell(latlng: LatLng): GridCell {
+    const pt = this.map.project(latlng, this.zoom);
+    const relX = pt.x - this.origin.x;
+    const relY = pt.y - this.origin.y;
+    const i = Math.floor(relX / this.tileSize);
+    const j = Math.floor(relY / this.tileSize);
+    return { i, j };
+  }
+
+  cellToLatLngBounds(cell: GridCell): leaflet.LatLngBounds {
+    const nwTile = leaflet.point(
+      this.origin.x + cell.i * this.tileSize,
+      this.origin.y + cell.j * this.tileSize,
+    );
+    const seTile = leaflet.point(
+      this.origin.x + (cell.i + 1) * this.tileSize,
+      this.origin.y + (cell.j + 1) * this.tileSize,
+    );
+    const nwLatLng = this.map.unproject(nwTile, this.zoom);
+    const seLatLng = this.map.unproject(seTile, this.zoom);
+    return leaflet.latLngBounds([
+      [nwLatLng.lat, nwLatLng.lng],
+      [seLatLng.lat, seLatLng.lng],
+    ]);
+  }
+
+  distanceToPlayer(cell: GridCell): number {
+    const playerLatLng = this.getPlayerLatLng();
+    const playerPt = this.map.project(playerLatLng, this.zoom);
+    const relX = playerPt.x - this.origin.x;
+    const relY = playerPt.y - this.origin.y;
+    const playerI = Math.floor(relX / this.tileSize);
+    const playerJ = Math.floor(relY / this.tileSize);
+    const dx = Math.abs(cell.i - playerI);
+    const dy = Math.abs(cell.j - playerJ);
+    return dx + dy;
+  }
+
+  cellCenterLatLng(cell: GridCell): leaflet.LatLng {
+    const bounds = this.cellToLatLngBounds(cell);
+    return bounds.getCenter();
+  }
 }
 
 // Create basic UI elements
@@ -36,19 +233,13 @@ controlPanelDiv.id = "controlPanel";
 const mapDiv = document.createElement("div");
 mapDiv.id = "map";
 document.body.append(mapDiv);
-
-// Put the control panel inside the map so it overlays the map area
 mapDiv.append(controlPanelDiv);
 
-// statusPanelDiv removed: we only show holding text as an overlay on the map
-
-// Inventory badge shown over the map canvas
 const inventoryBadge = document.createElement("div");
 inventoryBadge.id = "inventoryBadge";
 inventoryBadge.innerText = "Holding: none";
 mapDiv.append(inventoryBadge);
 
-// Win banner (hidden until player wins). Includes a Play Again button.
 const winBanner = document.createElement("div");
 winBanner.id = "winBanner";
 winBanner.innerHTML = `
@@ -58,22 +249,17 @@ winBanner.innerHTML = `
 winBanner.style.display = "none";
 mapDiv.append(winBanner);
 
-// Centralized game state
-const gameState: GameState = {
-  heldToken: null,
-  collectedSet: new Set<string>(),
-  hasWon: false,
-};
-
-// Play again handler: clear collected/held state and respawn tokens
+/**
+ * Reset the game state and respawn tokens.
+ *
+ * Resets the `gameState` (clears held token and collected set) and
+ * instructs the `TokenManager` to remove existing token layers and
+ * spawn new tokens for the current view.
+ */
 function playAgain() {
-  gameState.hasWon = false;
-  gameState.heldToken = null;
-  gameState.collectedSet.clear();
-  tokensLayer.clearLayers();
-  tokensMap.clear();
-  updateStatusPanel();
-  spawnTokens();
+  gameState.reset();
+  tokenManager.clearAll();
+  tokenManager.spawnTokens();
 }
 
 // Attach listener to the Play Again button once the element exists
@@ -94,44 +280,22 @@ const TILE_SIZE_PX = 60;
 const PROXIMITY_DETECT_RADIUS = 6;
 const SPAWN_ANIMATION_DURATION_MS = 900;
 
-// //// //// //// //// //// ////
-// MAP
-// //// //// //// //// //// ////
+/*
+ * MAP
+ *
+ * Initialize the Leaflet map with a base tile layer and the player
+ * marker, and expose a `MapManager` instance used by the rest of the
+ * application to perform map operations without touching Leaflet APIs
+ * directly.
+ */
 
-// Create the map (element with id "map" is defined in index.html)
-const map = leaflet.map(mapDiv, {
-  center: CLASSROOM_LATLNG,
-  zoom: GAMEPLAY_ZOOM_LEVEL,
-  minZoom: GAMEPLAY_ZOOM_LEVEL,
-  maxZoom: GAMEPLAY_ZOOM_LEVEL,
-  zoomControl: false,
-  scrollWheelZoom: false,
-  touchZoom: false,
-  doubleClickZoom: false,
-  boxZoom: false,
-  keyboard: false,
-});
+const mapManager = new MapManager("map", CLASSROOM_LATLNG, GAMEPLAY_ZOOM_LEVEL);
+const playerMarker = mapManager.playerMarker;
 
-// Populate the map with a background tile layer
-leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution:
-    '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
-
-// Add a marker to represent the player
-const playerMarker = leaflet.marker(CLASSROOM_LATLNG);
-playerMarker.bindTooltip("Cell ", {
-  permanent: false,
-  direction: "top",
-  className: "player-label",
-});
-playerMarker.addTo(map);
-
-updatePlayerTooltip();
+updateUI();
 
 playerMarker.on("mouseover", () => {
-  updatePlayerTooltip();
+  updateUI();
   playerMarker.openTooltip();
 });
 
@@ -141,15 +305,19 @@ playerMarker.on("mouseout", () => {
 
 // On click, update and show the tooltip (do not pin it)
 playerMarker.on("click", () => {
-  updatePlayerTooltip();
+  updateUI();
   playerMarker.openTooltip();
 });
 
-updatePlayerTooltip();
+updateUI();
 
-// //// //// //// //// //// ////
-// BUTTONS
-// //// //// //// //// //// ////
+/*
+ * BUTTONS
+ *
+ * Build directional controls for moving the player one grid cell at a
+ * time and a toggle for free-look mode. Controls include accessibility
+ * attributes and minimal state handling.
+ */
 
 const EYE_SVG = `
   <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -165,41 +333,44 @@ const PIN_SVG = `
   </svg>
 `;
 
-const controlsContainer = document.createElement("div");
-controlsContainer.id = "directionalControls";
-controlsContainer.className = "directional-controls";
+const DIRECTIONS = [
+  { label: "↑", dx: 0, dy: -1, aria: "Move up" },
+  { label: "←", dx: -1, dy: 0, aria: "Move left" },
+  { label: "→", dx: 1, dy: 0, aria: "Move right" },
+  { label: "↓", dx: 0, dy: 1, aria: "Move down" },
+];
 
-let freeLook = false;
-
+/**
+ * Toggle free-look (map dragging) mode.
+ *
+ * When `enabled` is false the map recenters on the player's position and
+ * dragging is disabled. When `enabled` is true dragging is enabled so the
+ * user can pan independently of the player's marker.
+ */
 function setFreeLook(enabled: boolean) {
   freeLook = enabled;
 
   if (!enabled) {
-    map.dragging.disable();
+    mapManager.disableDragging();
 
-    map.setView(playerMarker.getLatLng(), GAMEPLAY_ZOOM_LEVEL);
+    mapManager.setView(playerMarker.getLatLng(), GAMEPLAY_ZOOM_LEVEL);
   } else {
-    map.dragging.enable();
+    mapManager.enableDragging();
   }
 }
 
-const buttons: HTMLButtonElement[] = [];
+let freeLook = false;
 
-for (let i = 0; i < 5; i++) {
-  buttons.push(document.createElement("button"));
-  buttons[i].type = "button";
-}
-
-buttons[0].innerText = "↑";
-buttons[1].innerText = "←";
-buttons[2].innerText = "→";
-buttons[3].innerText = "↓";
-buttons[4].innerHTML = PIN_SVG;
-
-// Helper: move player by a grid delta (dx,dj)
+/**
+ * Move the player by a grid delta (dx, dy).
+ *
+ * Preserves the player's intra-cell offset (so movement is in world pixel
+ * space aligned to the grid anchor), updates the tooltip/UI, and spawns
+ * tokens for newly-visible cells.
+ */
 function movePlayerBy(dx: number, dy: number) {
   const current = playerMarker.getLatLng();
-  const currentPt = map.project(current, GAMEPLAY_ZOOM_LEVEL);
+  const currentPt = mapManager.project(current, GAMEPLAY_ZOOM_LEVEL);
 
   const relX = currentPt.x - WORLD_ORIGIN_POINT.x;
   const relY = currentPt.y - WORLD_ORIGIN_POINT.y;
@@ -209,28 +380,32 @@ function movePlayerBy(dx: number, dy: number) {
 
   const newWorldX = WORLD_ORIGIN_POINT.x + newRelX;
   const newWorldY = WORLD_ORIGIN_POINT.y + newRelY;
-  const newLatLng = map.unproject(
+  const newLatLng = mapManager.unproject(
     leaflet.point(newWorldX, newWorldY),
     GAMEPLAY_ZOOM_LEVEL,
   );
 
   playerMarker.setLatLng(newLatLng);
-  updatePlayerTooltip();
+  updateUI();
 
-  // Recenter camera only when freeLook is disabled
   if (!freeLook) {
-    map.setView(newLatLng, GAMEPLAY_ZOOM_LEVEL);
+    mapManager.setView(newLatLng, GAMEPLAY_ZOOM_LEVEL);
   }
 
   spawnTokens();
 }
 
-// Update the player's marker tooltip to show the grid cell the player is currently in.
+/**
+ * Update the player's tooltip to display the current grid cell key.
+ *
+ * Converts the marker's lat/lng to a grid cell using `gridUtils` and
+ * updates or binds the tooltip accordingly.
+ */
 function updatePlayerTooltip() {
   try {
     const latlng = playerMarker.getLatLng();
-    const cell = _latLngToGridCell(latlng);
-    const content = `Player ${gridCellKey(cell)}`;
+    const cell = gridUtils!.latLngToCell(latlng);
+    const content = `Player ${gridUtils!.getKey(cell)}`;
     const t = playerMarker.getTooltip();
     if (t) {
       t.setContent(content);
@@ -246,124 +421,336 @@ function updatePlayerTooltip() {
   }
 }
 
-for (let idx = 0; idx < buttons.length; idx++) {
-  const button = buttons[idx];
-  if (idx !== 4) {
-    button.className = "directional-button";
-    button.setAttribute("aria-pressed", "false");
-    button.addEventListener("click", () => {
-      switch (idx) {
-        case 0: // up
-          movePlayerBy(0, -1);
-          break;
-        case 1: // left
-          movePlayerBy(-1, 0);
-          break;
-        case 2: // right
-          movePlayerBy(1, 0);
-          break;
-        case 3: // down
-          movePlayerBy(0, 1);
-          break;
-      }
-      // brief press feedback
-      button.setAttribute("aria-pressed", "true");
-      setTimeout(() => button.setAttribute("aria-pressed", "false"), 150);
-    });
-  } else {
-    // free-look toggle: use global `freeLook` state via setFreeLook
-    button.setAttribute("aria-pressed", String(freeLook));
-    button.addEventListener("click", () => {
-      const newState = !freeLook;
-      setFreeLook(newState);
-      button.innerHTML = newState ? EYE_SVG : PIN_SVG;
-      button.setAttribute("aria-pressed", String(newState));
-    });
+/**
+ * Create the directional control UI container.
+ *
+ * Returns a DOM element containing directional buttons and a center
+ * toggle. Buttons are wired to call `movePlayerBy` and `setFreeLook`.
+ */
+function createDirectionalControls() {
+  const controlsContainer = document.createElement("div");
+  controlsContainer.id = "directionalControls";
+  controlsContainer.className = "directional-controls";
+
+  const buttons: HTMLButtonElement[] = [];
+  for (let i = 0; i < 5; i++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    buttons.push(b);
   }
+
+  // Assign labels and aria-labels
+  for (let i = 0; i < 4; i++) {
+    buttons[i].innerText = DIRECTIONS[i].label;
+  }
+  buttons[4].innerHTML = PIN_SVG;
+  buttons[4].setAttribute("aria-label", "Toggle free-look");
+
+  for (let idx = 0; idx < buttons.length; idx++) {
+    const button = buttons[idx];
+    if (idx < 4) {
+      const dir = DIRECTIONS[idx];
+      button.addEventListener("click", () => {
+        movePlayerBy(dir.dx, dir.dy);
+      });
+    } else {
+      button.addEventListener("click", () => {
+        const newState = !freeLook;
+        setFreeLook(newState);
+        button.innerHTML = newState ? EYE_SVG : PIN_SVG;
+      });
+    }
+  }
+
+  const rowTop = document.createElement("div");
+  rowTop.className = "directional-row row-top";
+  rowTop.appendChild(buttons[0]);
+
+  const rowMiddle = document.createElement("div");
+  rowMiddle.className = "directional-row row-middle";
+  rowMiddle.appendChild(buttons[1]);
+  rowMiddle.appendChild(buttons[4]);
+  rowMiddle.appendChild(buttons[2]);
+
+  const rowBottom = document.createElement("div");
+  rowBottom.className = "directional-row row-bottom";
+  rowBottom.appendChild(buttons[3]);
+
+  controlsContainer.appendChild(rowTop);
+  controlsContainer.appendChild(rowMiddle);
+  controlsContainer.appendChild(rowBottom);
+
+  return controlsContainer;
 }
 
-// Arrange buttons visually: up above, left/center/right in a row, down below.
-const rowTop = document.createElement("div");
-rowTop.className = "directional-row row-top";
-rowTop.appendChild(buttons[0]);
+controlPanelDiv.appendChild(createDirectionalControls());
 
-const rowMiddle = document.createElement("div");
-rowMiddle.className = "directional-row row-middle";
-rowMiddle.appendChild(buttons[1]);
-rowMiddle.appendChild(buttons[4]);
-rowMiddle.appendChild(buttons[2]);
-
-const rowBottom = document.createElement("div");
-rowBottom.className = "directional-row row-bottom";
-rowBottom.appendChild(buttons[3]);
-
-controlsContainer.appendChild(rowTop);
-controlsContainer.appendChild(rowMiddle);
-controlsContainer.appendChild(rowBottom);
-
-controlPanelDiv.appendChild(controlsContainer);
-
-// Apply initial freeLook state (locked by default)
 setFreeLook(freeLook);
 
-// //// //// //// //// //// ////
-// TOKEN SPAWNING
-// //// //// //// //// //// ////
+/*
+ * TOKEN SPAWNING
+ *
+ * Spawn token rectangles for visible grid cells. Token spawn probability
+ * and values are computed deterministically via the `luck` function and
+ * distribution logic encapsulated in `TokenManager`.
+ */
 
-// World-origin point (pixel coordinates) for lat=0,lng=0 at our game zoom.
-// This makes gridspace (0,0) correspond to geographic (0,0) — "null island".
-const WORLD_ORIGIN_POINT = map.project(
+const WORLD_ORIGIN_POINT = mapManager.project(
   leaflet.latLng(0, 0),
   GAMEPLAY_ZOOM_LEVEL,
 );
 
+const gridUtils = new GridUtils(
+  mapManager.map,
+  WORLD_ORIGIN_POINT,
+  GAMEPLAY_ZOOM_LEVEL,
+  TILE_SIZE_PX,
+  () => playerMarker.getLatLng(),
+);
+
 // Token spawning parameters
 const TOKEN_SPAWN_PROBABILITY = 0.12;
-// Token exponents: tokens are 2^exp, exp range 0..TOKEN_MAX_EXP
 const TOKEN_MAX_EXP = 4;
-const WIN_VALUE = Math.pow(2, TOKEN_MAX_EXP); // value needed to win the game
+const WIN_VALUE = Math.pow(2, TOKEN_MAX_EXP);
 
-const _expWeights: number[] = [];
-for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
-  _expWeights.push(1 / Math.pow(2, e));
+const gameState = new GameStateManager(WIN_VALUE, updateUI);
+
+// TokenManager encapsulates token layer and spawn logic
+class TokenManager {
+  public tokensLayer: leaflet.LayerGroup;
+  public tokensMap: Map<string, { layer: leaflet.Layer; exp: number }>;
+
+  private readonly expDistribution: number[];
+  private readonly expSpawnMultiplier: number[];
+
+  constructor(
+    private readonly mapManager: MapManager,
+    private readonly gridUtils: GridUtils,
+    private readonly gameState: GameStateManager,
+    private readonly luckFn: (k: string) => number,
+    private readonly tileSize: number,
+    private readonly zoom: number,
+    private readonly spawnProbability: number,
+    private readonly maxExp: number,
+    private readonly proximityRadius: number,
+  ) {
+    const _expWeights: number[] = [];
+    for (let e = 0; e <= this.maxExp; e++) {
+      _expWeights.push(1 / Math.pow(2, e));
+    }
+    const expTotal = _expWeights.reduce((s, v) => s + v, 0);
+    this.expDistribution = [];
+    let acc = 0;
+    for (let e = 0; e <= this.maxExp; e++) {
+      acc += _expWeights[e] / expTotal;
+      this.expDistribution.push(acc);
+    }
+    this.expSpawnMultiplier = _expWeights.map((w) => w / _expWeights[0]);
+
+    this.tokensLayer = leaflet.layerGroup();
+    this.tokensLayer.addTo(this.mapManager.map);
+    this.tokensMap = new Map();
+  }
+
+  clearAll() {
+    this.tokensLayer.clearLayers();
+    this.tokensMap.clear();
+  }
+
+  spawnTokens() {
+    const bounds = this.mapManager.getBounds();
+    const nw = bounds.getNorthWest();
+    const se = bounds.getSouthEast();
+    const nwPt = this.mapManager.project(nw, this.zoom);
+    const sePt = this.mapManager.project(se, this.zoom);
+
+    const nwRelX = nwPt.x - WORLD_ORIGIN_POINT.x;
+    const seRelX = sePt.x - WORLD_ORIGIN_POINT.x;
+    const nwRelY = nwPt.y - WORLD_ORIGIN_POINT.y;
+    const seRelY = sePt.y - WORLD_ORIGIN_POINT.y;
+
+    const minI = Math.floor(Math.min(nwRelX, seRelX) / this.tileSize);
+    const maxI = Math.floor((Math.max(nwRelX, seRelX) - 1) / this.tileSize);
+    const minJ = Math.floor(Math.min(nwRelY, seRelY) / this.tileSize);
+    const maxJ = Math.floor((Math.max(nwRelY, seRelY) - 1) / this.tileSize);
+
+    for (let i = minI; i <= maxI; i++) {
+      for (let j = minJ; j <= maxJ; j++) {
+        this.trySpawnCell({ i, j });
+      }
+    }
+  }
+
+  public trySpawnCell(cell: GridCell) {
+    const key = this.gridUtils.getKey(cell);
+
+    if (this.gameState.isCollected(key)) return;
+
+    const existing = this.tokensMap.get(key);
+    if (existing) {
+      if (!this.tokensLayer.hasLayer(existing.layer)) {
+        this.tokensLayer.addLayer(existing.layer);
+      }
+      return;
+    }
+
+    const vRand = this.luckFn(key + ":value");
+    let exp = 0;
+    for (let e = 0; e <= this.maxExp; e++) {
+      if (vRand < this.expDistribution[e]) {
+        exp = e;
+        break;
+      }
+    }
+
+    const spawnRand = this.luckFn(key + ":spawn");
+    const spawnThreshold = this.spawnProbability * this.expSpawnMultiplier[exp];
+    if (!(spawnRand < spawnThreshold)) return;
+
+    const rect = this.createTokenRectangle(cell, exp);
+
+    rect.on("click", (e: LeafletMouseEvent) => {
+      if (this.gameState.hasWon) {
+        const popup = leaflet.popup({ closeButton: false, autoClose: true })
+          .setLatLng(e.latlng)
+          .setContent("Game complete — press Play again to continue");
+        this.mapManager.openPopup(popup);
+        setTimeout(() => this.mapManager.closePopup(popup), 900);
+        return;
+      }
+
+      const gridDist = this.gridUtils.distanceToPlayer(cell);
+
+      if (gridDist <= this.proximityRadius) {
+        if (this.gameState.heldToken) {
+          if (this.gameState.heldToken!.exp === exp) {
+            if (exp < this.maxExp) {
+              exp = exp + 1;
+              const newValue = 2 ** exp;
+              const t = rect.getTooltip();
+              if (t) {
+                t.setContent(String(newValue));
+              } else {
+                rect.bindTooltip(String(newValue), {
+                  permanent: true,
+                  direction: "center",
+                  className: "token-label",
+                });
+              }
+              this.tokensMap.set(key, { layer: rect, exp });
+              this.gameState.clearHeldToken();
+            } else {
+              const popup = leaflet.popup({
+                closeButton: false,
+                autoClose: true,
+              })
+                .setLatLng(e.latlng)
+                .setContent(`Token already at max value`);
+              this.mapManager.openPopup(popup);
+              setTimeout(() => this.mapManager.closePopup(popup), 900);
+            }
+          } else {
+            const popup = leaflet.popup({ closeButton: false, autoClose: true })
+              .setLatLng(e.latlng)
+              .setContent(
+                `You are already carrying a different token (value ${
+                  2 ** this.gameState.heldToken!.exp
+                })`,
+              );
+            this.mapManager.openPopup(popup);
+            setTimeout(() => this.mapManager.closePopup(popup), 900);
+          }
+        } else {
+          this.tokensLayer.removeLayer(rect);
+          this.tokensMap.delete(key);
+          this.gameState.collectToken({ key, exp });
+        }
+      } else {
+        const popup = leaflet.popup({ closeButton: false, autoClose: true })
+          .setLatLng(e.latlng)
+          .setContent(`Too far — ${gridDist} gridspaces away`);
+        this.mapManager.openPopup(popup);
+        setTimeout(() => this.mapManager.closePopup(popup), 900);
+      }
+    });
+
+    this.tokensMap.set(key, { layer: rect, exp });
+    this.tokensLayer.addLayer(rect);
+  }
+
+  public createTokenRectangle(cell: GridCell, exp: number) {
+    const bounds = this.gridUtils.cellToLatLngBounds(cell);
+    const rect = leaflet.rectangle(bounds, {
+      weight: 1,
+      color: "#cc6600",
+      fillColor: "#ff7f0e",
+      fillOpacity: 0.2,
+    });
+    const center = bounds.getCenter();
+    rect.bindTooltip(String(2 ** exp), {
+      permanent: true,
+      direction: "center",
+      className: "token-label",
+    });
+    const tooltip = rect.getTooltip();
+    if (tooltip) tooltip.setLatLng(center);
+    return rect;
+  }
 }
-const expTotal = _expWeights.reduce((s, v) => s + v, 0);
-const EXP_DISTRIBUTION: number[] = [];
-let acc = 0;
-for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
-  acc += _expWeights[e] / expTotal;
-  EXP_DISTRIBUTION.push(acc);
-}
-const EXP_SPAWN_MULTIPLIER = _expWeights.map((w) => w / _expWeights[0]);
 
-// Layer to hold token markers (persist across view changes)
-const tokensLayer = leaflet.layerGroup().addTo(map);
-// Map of tokens keyed by base world-tile (tx:ty); stores layer + exponent
-const tokensMap = new Map<string, { layer: leaflet.Layer; exp: number }>();
-
+// Create the token manager
+const tokenManager = new TokenManager(
+  mapManager,
+  gridUtils,
+  gameState,
+  luck,
+  TILE_SIZE_PX,
+  GAMEPLAY_ZOOM_LEVEL,
+  TOKEN_SPAWN_PROBABILITY,
+  TOKEN_MAX_EXP,
+  PROXIMITY_DETECT_RADIUS,
+);
+/**
+ * Update inventory and win UI elements.
+ *
+ * Reads `gameState` to set the on-map inventory badge and to toggle the
+ * win banner when the player has obtained the winning token value.
+ */
 function updateStatusPanel() {
   const holding = gameState.heldToken
     ? `Holding: ${2 ** gameState.heldToken.exp}`
     : "Holding: none";
   // Also update the on-map inventory badge
   if (inventoryBadge) inventoryBadge.innerText = holding;
-  // Show win banner when player is holding the max-value token
-  const hasWinToken = gameState.heldToken &&
-    2 ** gameState.heldToken.exp === WIN_VALUE;
-  if (hasWinToken) {
-    gameState.hasWon = true;
+  // Show win banner when player is holding the max-value token (manager tracks win state)
+  if (gameState.hasWon) {
     winBanner.classList.add("show-win");
   } else {
-    gameState.hasWon = false;
     winBanner.classList.remove("show-win");
   }
 }
+updateUI();
 
-// Initialize status panel
-updateStatusPanel();
+/**
+ * Refresh UI elements tied to game state and player position.
+ *
+ * Calls `updateStatusPanel` and `updatePlayerTooltip` inside a try/catch
+ * to avoid UI updates breaking gameplay flow.
+ */
+function updateUI() {
+  try {
+    updateStatusPanel();
+    updatePlayerTooltip();
+  } catch (error) {
+    console.log("Error updating UI", error);
+  }
+}
 
-// Small helper to show a temporary popup at a given location and auto-close it.
-function openTempPopup(
+/**
+ * Show a temporary popup at `latlng` with the provided content and auto-
+ * close it after `duration` milliseconds.
+ */
+function _openTempPopup(
   latlng: LatLng,
   content: string,
   duration = SPAWN_ANIMATION_DURATION_MS,
@@ -371,21 +758,26 @@ function openTempPopup(
   const popup = leaflet.popup({ closeButton: false, autoClose: true })
     .setLatLng(latlng)
     .setContent(content);
-  popup.openOn(map);
-  setTimeout(() => map.closePopup(popup), duration);
+  mapManager.openPopup(popup);
+  setTimeout(() => mapManager.closePopup(popup), duration);
 }
 
-// Spawn tokens for the currently visible world-tile cells.
+/**
+ * Spawn tokens for all grid cells that intersect the visible map bounds.
+ *
+ * Converts the map bounds to world pixel coordinates relative to the
+ * `WORLD_ORIGIN_POINT` and iterates the covered grid cells, delegating
+ * to `trySpawnCell` for each cell.
+ */
 function spawnTokens() {
-  const bounds = map.getBounds();
+  const bounds = mapManager.getBounds();
 
   const nw = bounds.getNorthWest();
   const se = bounds.getSouthEast();
 
-  const nwPt = map.project(nw, GAMEPLAY_ZOOM_LEVEL);
-  const sePt = map.project(se, GAMEPLAY_ZOOM_LEVEL);
+  const nwPt = mapManager.project(nw, GAMEPLAY_ZOOM_LEVEL);
+  const sePt = mapManager.project(se, GAMEPLAY_ZOOM_LEVEL);
 
-  // Compute positions relative to WORLD_ORIGIN_POINT so grid (0,0) == lat/lng (0,0)
   const nwRelX = nwPt.x - WORLD_ORIGIN_POINT.x;
   const seRelX = sePt.x - WORLD_ORIGIN_POINT.x;
   const nwRelY = nwPt.y - WORLD_ORIGIN_POINT.y;
@@ -403,206 +795,42 @@ function spawnTokens() {
   }
 }
 
-// Compute Manhattan grid distance (in tile units) from the player to a cell.
-function gridDistanceToPlayer(cell: GridCell): number {
-  const playerLatLng = playerMarker.getLatLng();
-  const playerPt = map.project(playerLatLng, GAMEPLAY_ZOOM_LEVEL);
-  const relX = playerPt.x - WORLD_ORIGIN_POINT.x;
-  const relY = playerPt.y - WORLD_ORIGIN_POINT.y;
-  const playerI = Math.floor(relX / TILE_SIZE_PX);
-  const playerJ = Math.floor(relY / TILE_SIZE_PX);
-  const dx = Math.abs(cell.i - playerI);
-  const dy = Math.abs(cell.j - playerJ);
-  return dx + dy;
-}
-
-// Utility: stable string key for a grid cell
-function gridCellKey(cell: GridCell): string {
-  return `${cell.i}:${cell.j}`;
-}
-
-// Utility: parse a key back into a GridCell
-function _parseGridCellKey(key: string): GridCell {
-  const [iStr, jStr] = key.split(":");
-  return { i: Number(iStr), j: Number(jStr) };
-}
-
-// Convert a continuous LatLng into a GridCell at our base zoom / tile size
-function _latLngToGridCell(latlng: LatLng): GridCell {
-  const pt = map.project(latlng, GAMEPLAY_ZOOM_LEVEL);
-  const relX = pt.x - WORLD_ORIGIN_POINT.x;
-  const relY = pt.y - WORLD_ORIGIN_POINT.y;
-  const i = Math.floor(relX / TILE_SIZE_PX);
-  const j = Math.floor(relY / TILE_SIZE_PX);
-  return { i, j };
-}
-
-// Convert a GridCell into its NW (top-left) and SE (bottom-right) LatLng bounds
-// Return a Leaflet `LatLngBounds` for a grid cell (top-left -> bottom-right)
-function gridCellToLatLngBounds(cell: GridCell): leaflet.LatLngBounds {
-  // Convert cell coords into world pixel coordinates by adding the world-origin offset
-  const nwTile = leaflet.point(
-    WORLD_ORIGIN_POINT.x + cell.i * TILE_SIZE_PX,
-    WORLD_ORIGIN_POINT.y + cell.j * TILE_SIZE_PX,
-  );
-  const seTile = leaflet.point(
-    WORLD_ORIGIN_POINT.x + (cell.i + 1) * TILE_SIZE_PX,
-    WORLD_ORIGIN_POINT.y + (cell.j + 1) * TILE_SIZE_PX,
-  );
-  const nwLatLng = map.unproject(nwTile, GAMEPLAY_ZOOM_LEVEL);
-  const seLatLng = map.unproject(seTile, GAMEPLAY_ZOOM_LEVEL);
-  return leaflet.latLngBounds([
-    [nwLatLng.lat, nwLatLng.lng],
-    [seLatLng.lat, seLatLng.lng],
-  ]);
-}
-
+/**
+ * Compatibility wrapper to delegate a single cell spawn attempt to the
+ * `TokenManager` instance.
+ */
 function trySpawnCell(cell: GridCell) {
-  const key = gridCellKey(cell);
-
-  // Don't spawn if already collected
-  if (gameState.collectedSet.has(key)) return;
-
-  // If token already exists for this cell, ensure it's in the layer and return
-  const existing = tokensMap.get(key);
-  if (existing) {
-    if (!tokensLayer.hasLayer(existing.layer)) {
-      tokensLayer.addLayer(existing.layer);
-    }
-    return;
-  }
-
-  // Determine deterministic token value for this cell using a rarity distribution
-  const vRand = luck(key + ":value");
-  let exp = 0;
-  for (let e = 0; e <= TOKEN_MAX_EXP; e++) {
-    if (vRand < EXP_DISTRIBUTION[e]) {
-      exp = e;
-      break;
-    }
-  }
-
-  const spawnRand = luck(key + ":spawn");
-  const spawnThreshold = TOKEN_SPAWN_PROBABILITY * EXP_SPAWN_MULTIPLIER[exp];
-  if (!(spawnRand < spawnThreshold)) return;
-  // Create a rectangle snapped to the integer grid cell bounds
-  const rect = createTokenRectangle(cell, exp);
-
-  rect.on("click", (e: LeafletMouseEvent) => {
-    if (gameState.hasWon) {
-      const popup = leaflet.popup({ closeButton: false, autoClose: true })
-        .setLatLng(e.latlng)
-        .setContent("Game complete — press Play again to continue");
-      popup.openOn(map);
-      setTimeout(() => map.closePopup(popup), 900);
-      return;
-    }
-
-    const gridDist = gridDistanceToPlayer(cell);
-
-    if (gridDist <= PROXIMITY_DETECT_RADIUS) {
-      // If already holding a token
-      if (gameState.heldToken) {
-        // If held exponent matches map exponent, attempt to deposit/merge
-        if (gameState.heldToken!.exp === exp) {
-          if (exp < TOKEN_MAX_EXP) {
-            // merge: increment exponent on the map token
-            exp = exp + 1;
-            const newValue = 2 ** exp;
-            // update tooltip
-            const t = rect.getTooltip();
-            if (t) {
-              t.setContent(String(newValue));
-            } else {
-              rect.bindTooltip(String(newValue), {
-                permanent: true,
-                direction: "center",
-                className: "token-label",
-              });
-            }
-            // update stored exponent for this tile
-            tokensMap.set(key, { layer: rect, exp });
-            // consume held token
-            gameState.heldToken = null;
-            updateStatusPanel();
-          } else {
-            openTempPopup(e.latlng, `Token already at max value`);
-          }
-        } else {
-          openTempPopup(
-            e.latlng,
-            `You are already carrying a different token (value ${
-              2 ** gameState.heldToken!.exp
-            })`,
-          );
-        }
-      } else {
-        // Pick up token into the single-slot inventory (do not award points now)
-        tokensLayer.removeLayer(rect);
-        tokensMap.delete(key);
-        gameState.collectedSet.add(key);
-        gameState.heldToken = { key, exp };
-        updateStatusPanel();
-      }
-    } else {
-      // Show a temporary popup indicating token is too far
-      openTempPopup(e.latlng, `Too far — ${gridDist} gridspaces away`);
-    }
-  });
-
-  tokensMap.set(key, { layer: rect, exp });
-  tokensLayer.addLayer(rect);
+  tokenManager.trySpawnCell(cell);
 }
 
-// Create a token rectangle for a grid cell and bind a centered tooltip.
-function createTokenRectangle(cell: GridCell, exp: number) {
-  const bounds = gridCellToLatLngBounds(cell);
-  const rect = leaflet.rectangle(bounds, {
-    weight: 1,
-    color: "#cc6600",
-    fillColor: "#ff7f0e",
-    fillOpacity: 0.2,
-  });
-  // Ensure tooltip is anchored at the cell center for perfect alignment
-  const center = bounds.getCenter();
-  rect.bindTooltip(String(2 ** exp), {
-    permanent: true,
-    direction: "center",
-    className: "token-label",
-  });
-  // Force tooltip position to the exact center
-  const tooltip = rect.getTooltip();
-  if (tooltip) tooltip.setLatLng(center);
-  return rect;
-}
+mapManager.on("moveend", spawnTokens);
+mapManager.on("zoomend", spawnTokens);
+mapManager.on("resize", spawnTokens);
 
-// Refresh tokens when the view changes or the map is resized
-map.on("moveend", spawnTokens);
-map.on("zoomend", spawnTokens);
-map.on("resize", spawnTokens);
-
-// Initial spawn
 spawnTokens();
 
-// //// //// //// //// //// ////
-// GRID OVERLAY
-// //// //// //// //// //// ////
+/*
+ * GRID OVERLAY
+ *
+ * Render a custom grid layer aligned to the `WORLD_ORIGIN_POINT` so that
+ * visual grid lines line up with the logical grid cells used by the
+ * gameplay code. Tiles are styled with repeating linear gradients sized
+ * to `TILE_SIZE_PX`.
+ */
 leaflet.GridLayer = leaflet.GridLayer.extend({
   createTile: function (coords: { x: number; y: number; z: number }) {
     const tile = document.createElement("div");
 
     const size = TILE_SIZE_PX;
-    // The tile's top-left in world pixel coordinates
     const tilePixelX = coords.x * size;
     const tilePixelY = coords.y * size;
 
-    // Compute how far this tile's top-left is from the world origin, modulo tile size
-    const offsetX = ((tilePixelX - WORLD_ORIGIN_POINT.x) % size + size) % size; // normalized 0..size-1
+    const offsetX = ((tilePixelX - WORLD_ORIGIN_POINT.x) % size + size) % size;
     const offsetY = ((tilePixelY - WORLD_ORIGIN_POINT.y) % size + size) % size;
 
     tile.style.width = `${size}px`;
     tile.style.height = `${size}px`;
-    tile.style.pointerEvents = "none"; // allow clicks to hit the map
+    tile.style.pointerEvents = "none";
     tile.style.backgroundImage =
       `repeating-linear-gradient(to right, transparent 0 ${
         size - 1
@@ -623,18 +851,18 @@ leaflet.gridLayer = function (opts) {
   return new leaflet.GridLayer(opts);
 };
 
-map.addLayer(leaflet.gridLayer({
+mapManager.addLayer(leaflet.gridLayer({
   tileSize: TILE_SIZE_PX,
 }));
 
 // For testing: UI shows grid cell info when user clicks the map (uses our conversion helpers)
 /*
 map.on("click", (e: LeafletMouseEvent) => {
-  const cell = _latLngToGridCell(e.latlng);
-  const bounds = gridCellToLatLngBounds(cell);
+  const cell = gridUtils!.latLngToCell(e.latlng);
+  const bounds = gridUtils!.cellToLatLngBounds(cell);
   const nw = bounds.getNorthWest();
   const se = bounds.getSouthEast();
-  const content = `Cell: ${gridCellKey(cell)}<br/>NW: ${nw.lat.toFixed(6)}, ${
+  const content = `Cell: ${gridUtils!.getKey(cell)}<br/>NW: ${nw.lat.toFixed(6)}, ${
     nw.lng.toFixed(6)
   }<br/>SE: ${se.lat.toFixed(6)}, ${se.lng.toFixed(6)}`;
   openTempPopup(e.latlng, content, 1600);
