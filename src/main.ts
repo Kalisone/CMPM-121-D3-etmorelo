@@ -280,6 +280,7 @@ mapDiv.append(winBanner);
  */
 function playAgain() {
   gameState.reset();
+  boardState.reset();
   tokenManager.clearAll();
   tokenManager.spawnTokens();
 }
@@ -291,16 +292,22 @@ winBanner.addEventListener("click", (e) => {
 });
 
 // Our classroom location
-const CLASSROOM_LATLNG = leaflet.latLng(
-  36.997936938057016,
-  -122.05703507501151,
-);
+// Centralized game tuning/configuration
+const GameConfig = {
+  CLASSROOM_LAT: 36.997936938057016,
+  CLASSROOM_LNG: -122.05703507501151,
+  GAMEPLAY_ZOOM_LEVEL: 19,
+  TILE_SIZE_PX: 60,
+  PROXIMITY_DETECT_RADIUS: 6,
+  SPAWN_ANIMATION_DURATION_MS: 900,
+  TOKEN_SPAWN_PROBABILITY: 0.12,
+  TOKEN_MAX_EXP: 4,
+} as const;
 
-// Tunable gameplay parameters
-const GAMEPLAY_ZOOM_LEVEL = 19;
-const TILE_SIZE_PX = 60;
-const PROXIMITY_DETECT_RADIUS = 6;
-const SPAWN_ANIMATION_DURATION_MS = 900;
+const CLASSROOM_LATLNG = leaflet.latLng(
+  GameConfig.CLASSROOM_LAT,
+  GameConfig.CLASSROOM_LNG,
+);
 
 /*
  * MAP
@@ -311,7 +318,11 @@ const SPAWN_ANIMATION_DURATION_MS = 900;
  * directly.
  */
 
-const mapManager = new MapManager("map", CLASSROOM_LATLNG, GAMEPLAY_ZOOM_LEVEL);
+const mapManager = new MapManager(
+  "map",
+  CLASSROOM_LATLNG,
+  GameConfig.GAMEPLAY_ZOOM_LEVEL,
+);
 const playerMarker = mapManager.playerMarker;
 
 updateUI();
@@ -375,7 +386,10 @@ function setFreeLook(enabled: boolean) {
   if (!enabled) {
     mapManager.disableDragging();
 
-    mapManager.setView(playerMarker.getLatLng(), GAMEPLAY_ZOOM_LEVEL);
+    mapManager.setView(
+      playerMarker.getLatLng(),
+      GameConfig.GAMEPLAY_ZOOM_LEVEL,
+    );
     // If the token manager is available, rebuild the visible grid so the
     // camera-lock (programmatic follow) view matches the player's new
     // position. Use `typeof` check to avoid referencing the const before
@@ -404,26 +418,26 @@ let freeLook = false;
  */
 function movePlayerBy(dx: number, dy: number) {
   const current = playerMarker.getLatLng();
-  const currentPt = mapManager.project(current, GAMEPLAY_ZOOM_LEVEL);
+  const currentPt = mapManager.project(current, GameConfig.GAMEPLAY_ZOOM_LEVEL);
 
   const relX = currentPt.x - WORLD_ORIGIN_POINT.x;
   const relY = currentPt.y - WORLD_ORIGIN_POINT.y;
 
-  const newRelX = relX + dx * TILE_SIZE_PX;
-  const newRelY = relY + dy * TILE_SIZE_PX;
+  const newRelX = relX + dx * GameConfig.TILE_SIZE_PX;
+  const newRelY = relY + dy * GameConfig.TILE_SIZE_PX;
 
   const newWorldX = WORLD_ORIGIN_POINT.x + newRelX;
   const newWorldY = WORLD_ORIGIN_POINT.y + newRelY;
   const newLatLng = mapManager.unproject(
     leaflet.point(newWorldX, newWorldY),
-    GAMEPLAY_ZOOM_LEVEL,
+    GameConfig.GAMEPLAY_ZOOM_LEVEL,
   );
 
   playerMarker.setLatLng(newLatLng);
   updateUI();
 
   if (!freeLook) {
-    mapManager.setView(newLatLng, GAMEPLAY_ZOOM_LEVEL);
+    mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
   }
 
   // Rebuild visible grid from scratch on every move: clear existing
@@ -534,24 +548,38 @@ setFreeLook(freeLook);
 
 const WORLD_ORIGIN_POINT = mapManager.project(
   leaflet.latLng(0, 0),
-  GAMEPLAY_ZOOM_LEVEL,
+  GameConfig.GAMEPLAY_ZOOM_LEVEL,
 );
 
 const gridUtils = new GridUtils(
   mapManager.map,
   WORLD_ORIGIN_POINT,
-  GAMEPLAY_ZOOM_LEVEL,
-  TILE_SIZE_PX,
+  GameConfig.GAMEPLAY_ZOOM_LEVEL,
+  GameConfig.TILE_SIZE_PX,
   () => playerMarker.getLatLng(),
 );
 
-const cellStateMemento: Map<string, { hasToken?: boolean; exp?: number }> =
-  new Map();
+class BoardState {
+  // The "Memento"
+  private state: Map<string, { hasToken?: boolean; exp?: number }> = new Map();
 
-// Token spawning parameters
-const TOKEN_SPAWN_PROBABILITY = 0.12;
-const TOKEN_MAX_EXP = 4;
-const WIN_VALUE = Math.pow(2, TOKEN_MAX_EXP);
+  get(key: string) {
+    return this.state.get(key);
+  }
+
+  set(key: string, value: { hasToken?: boolean; exp?: number }) {
+    this.state.set(key, value);
+  }
+
+  reset() {
+    this.state.clear();
+  }
+}
+
+const boardState = new BoardState();
+
+// Token spawning parameters are in `GameConfig`.
+const WIN_VALUE = Math.pow(2, GameConfig.TOKEN_MAX_EXP);
 
 const gameState = new GameStateManager(WIN_VALUE, updateUI);
 
@@ -664,7 +692,7 @@ class TokenManager {
       return;
     }
 
-    const memento = cellStateMemento.get(key);
+    const memento = boardState.get(key);
     let exp = 0;
     if (memento) {
       if (memento.hasToken === false) return;
@@ -692,7 +720,10 @@ class TokenManager {
           .setLatLng(e.latlng)
           .setContent("Game complete — press Play again to continue");
         this.mapManager.openPopup(popup);
-        setTimeout(() => this.mapManager.closePopup(popup), 900);
+        setTimeout(
+          () => this.mapManager.closePopup(popup),
+          GameConfig.SPAWN_ANIMATION_DURATION_MS,
+        );
         return;
       }
 
@@ -715,7 +746,7 @@ class TokenManager {
                 });
               }
               this.tokensMap.set(key, { layer: rect, exp });
-              cellStateMemento.set(key, { hasToken: true, exp });
+              boardState.set(key, { hasToken: true, exp });
               this.gameState.clearHeldToken();
             } else {
               const popup = leaflet.popup({
@@ -725,7 +756,10 @@ class TokenManager {
                 .setLatLng(e.latlng)
                 .setContent(`Token already at max value`);
               this.mapManager.openPopup(popup);
-              setTimeout(() => this.mapManager.closePopup(popup), 900);
+              setTimeout(
+                () => this.mapManager.closePopup(popup),
+                GameConfig.SPAWN_ANIMATION_DURATION_MS,
+              );
             }
           } else {
             const popup = leaflet.popup({ closeButton: false, autoClose: true })
@@ -736,12 +770,15 @@ class TokenManager {
                 })`,
               );
             this.mapManager.openPopup(popup);
-            setTimeout(() => this.mapManager.closePopup(popup), 900);
+            setTimeout(
+              () => this.mapManager.closePopup(popup),
+              GameConfig.SPAWN_ANIMATION_DURATION_MS,
+            );
           }
         } else {
           this.tokensLayer.removeLayer(rect);
           this.tokensMap.delete(key);
-          cellStateMemento.set(key, { hasToken: false });
+          boardState.set(key, { hasToken: false });
           this.gameState.collectToken({ key, exp });
         }
       } else {
@@ -749,7 +786,10 @@ class TokenManager {
           .setLatLng(e.latlng)
           .setContent(`Too far — ${gridDist} gridspaces away`);
         this.mapManager.openPopup(popup);
-        setTimeout(() => this.mapManager.closePopup(popup), 900);
+        setTimeout(
+          () => this.mapManager.closePopup(popup),
+          GameConfig.SPAWN_ANIMATION_DURATION_MS,
+        );
       }
     });
 
@@ -785,11 +825,11 @@ const tokenManager = new TokenManager(
   gridUtils,
   gameState,
   luck,
-  TILE_SIZE_PX,
-  GAMEPLAY_ZOOM_LEVEL,
-  TOKEN_SPAWN_PROBABILITY,
-  TOKEN_MAX_EXP,
-  PROXIMITY_DETECT_RADIUS,
+  GameConfig.TILE_SIZE_PX,
+  GameConfig.GAMEPLAY_ZOOM_LEVEL,
+  GameConfig.TOKEN_SPAWN_PROBABILITY,
+  GameConfig.TOKEN_MAX_EXP,
+  GameConfig.PROXIMITY_DETECT_RADIUS,
 );
 
 /**
@@ -835,7 +875,7 @@ function updateUI() {
 function _openTempPopup(
   latlng: LatLng,
   content: string,
-  duration = SPAWN_ANIMATION_DURATION_MS,
+  duration = GameConfig.SPAWN_ANIMATION_DURATION_MS,
 ) {
   const popup = leaflet.popup({ closeButton: false, autoClose: true })
     .setLatLng(latlng)
@@ -857,18 +897,22 @@ function spawnTokens() {
   const nw = bounds.getNorthWest();
   const se = bounds.getSouthEast();
 
-  const nwPt = mapManager.project(nw, GAMEPLAY_ZOOM_LEVEL);
-  const sePt = mapManager.project(se, GAMEPLAY_ZOOM_LEVEL);
+  const nwPt = mapManager.project(nw, GameConfig.GAMEPLAY_ZOOM_LEVEL);
+  const sePt = mapManager.project(se, GameConfig.GAMEPLAY_ZOOM_LEVEL);
 
   const nwRelX = nwPt.x - WORLD_ORIGIN_POINT.x;
   const seRelX = sePt.x - WORLD_ORIGIN_POINT.x;
   const nwRelY = nwPt.y - WORLD_ORIGIN_POINT.y;
   const seRelY = sePt.y - WORLD_ORIGIN_POINT.y;
 
-  const minI = Math.floor(Math.min(nwRelX, seRelX) / TILE_SIZE_PX);
-  const maxI = Math.floor((Math.max(nwRelX, seRelX) - 1) / TILE_SIZE_PX);
-  const minJ = Math.floor(Math.min(nwRelY, seRelY) / TILE_SIZE_PX);
-  const maxJ = Math.floor((Math.max(nwRelY, seRelY) - 1) / TILE_SIZE_PX);
+  const minI = Math.floor(Math.min(nwRelX, seRelX) / GameConfig.TILE_SIZE_PX);
+  const maxI = Math.floor(
+    (Math.max(nwRelX, seRelX) - 1) / GameConfig.TILE_SIZE_PX,
+  );
+  const minJ = Math.floor(Math.min(nwRelY, seRelY) / GameConfig.TILE_SIZE_PX);
+  const maxJ = Math.floor(
+    (Math.max(nwRelY, seRelY) - 1) / GameConfig.TILE_SIZE_PX,
+  );
 
   for (let i = minI; i <= maxI; i++) {
     for (let j = minJ; j <= maxJ; j++) {
@@ -884,7 +928,7 @@ function spawnTokens() {
 function trySpawnCell(cell: GridCell) {
   // "flyweight" check: skip if memento says no token
   const key = gridUtils.getKey(cell);
-  const m = cellStateMemento.get(key);
+  const m = boardState.get(key);
   if (m && m.hasToken === false) return;
 
   tokenManager.trySpawnCell(cell);
@@ -917,7 +961,7 @@ leaflet.GridLayer = leaflet.GridLayer.extend({
   createTile: function (coords: { x: number; y: number; z: number }) {
     const tile = document.createElement("div");
 
-    const size = TILE_SIZE_PX;
+    const size = GameConfig.TILE_SIZE_PX;
     const tilePixelX = coords.x * size;
     const tilePixelY = coords.y * size;
 
@@ -948,7 +992,7 @@ leaflet.gridLayer = function (opts) {
 };
 
 mapManager.addLayer(leaflet.gridLayer({
-  tileSize: TILE_SIZE_PX,
+  tileSize: GameConfig.TILE_SIZE_PX,
 }));
 
 // For testing: UI shows grid cell info when user clicks the map
