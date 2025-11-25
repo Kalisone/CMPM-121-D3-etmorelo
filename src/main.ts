@@ -508,6 +508,9 @@ const gridUtils = new GridUtils(
   () => playerMarker.getLatLng(),
 );
 
+const cellStateMemento: Map<string, { hasToken?: boolean; exp?: number }> =
+  new Map();
+
 // Token spawning parameters
 const TOKEN_SPAWN_PROBABILITY = 0.12;
 const TOKEN_MAX_EXP = 4;
@@ -593,19 +596,30 @@ class TokenManager {
       }
       return;
     }
-
-    const vRand = this.luckFn(key + ":value");
+    // First consult the memento (extrinsic state). If an explicit
+    // cell state exists, it overrides deterministic generation.
+    const memento = cellStateMemento.get(key);
     let exp = 0;
-    for (let e = 0; e <= this.maxExp; e++) {
-      if (vRand < this.expDistribution[e]) {
-        exp = e;
-        break;
+    if (memento) {
+      // If memento explicitly says no token, skip spawning.
+      if (memento.hasToken === false) return;
+      // Otherwise use stored exp (default 0 if absent).
+      exp = memento.exp ?? 0;
+    } else {
+      // No memento entry: generate intrinsic state deterministically.
+      const vRand = this.luckFn(key + ":value");
+      for (let e = 0; e <= this.maxExp; e++) {
+        if (vRand < this.expDistribution[e]) {
+          exp = e;
+          break;
+        }
       }
-    }
 
-    const spawnRand = this.luckFn(key + ":spawn");
-    const spawnThreshold = this.spawnProbability * this.expSpawnMultiplier[exp];
-    if (!(spawnRand < spawnThreshold)) return;
+      const spawnRand = this.luckFn(key + ":spawn");
+      const spawnThreshold = this.spawnProbability *
+        this.expSpawnMultiplier[exp];
+      if (!(spawnRand < spawnThreshold)) return;
+    }
 
     const rect = this.createTokenRectangle(cell, exp);
 
@@ -638,6 +652,9 @@ class TokenManager {
                 });
               }
               this.tokensMap.set(key, { layer: rect, exp });
+              // Persist the upgraded token state in the memento so the
+              // map remembers the new value for this cell.
+              cellStateMemento.set(key, { hasToken: true, exp });
               this.gameState.clearHeldToken();
             } else {
               const popup = leaflet.popup({
@@ -663,6 +680,8 @@ class TokenManager {
         } else {
           this.tokensLayer.removeLayer(rect);
           this.tokensMap.delete(key);
+          // Persist removal in the memento so this cell stays empty.
+          cellStateMemento.set(key, { hasToken: false });
           this.gameState.collectToken({ key, exp });
         }
       } else {
