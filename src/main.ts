@@ -21,18 +21,19 @@ class GameStateManager {
     private readonly winValue: number,
     private onStateChange: () => void,
   ) {}
-
+  // Return whether a cell key has been collected this session.
   isCollected(key: string): boolean {
     return this.collectedSet.has(key);
   }
 
+  // Pick up a token into the player's held slot and mark the cell collected.
   collectToken(token: Token) {
     this.heldToken = token;
     this.collectedSet.add(token.key);
     this.checkWinCondition();
     this.onStateChange();
   }
-
+  // Increment the held token's exponent (used when crafting/upgrading).
   upgradeHeldToken() {
     if (this.heldToken) {
       this.heldToken.exp++;
@@ -40,19 +41,19 @@ class GameStateManager {
       this.onStateChange();
     }
   }
-
+  // Reset game progress for a new play session.
   reset() {
     this.heldToken = null;
     this.collectedSet.clear();
     this.hasWon = false;
     this.onStateChange();
   }
-
+  // Drop the token the player is carrying without changing collected cells.
   clearHeldToken() {
     this.heldToken = null;
     this.onStateChange();
   }
-
+  // Internal: mark `hasWon` when held token reaches target value.
   private checkWinCondition() {
     if (this.heldToken && (2 ** this.heldToken.exp) === this.winValue) {
       this.hasWon = true;
@@ -88,6 +89,7 @@ class MapManager {
     this.initPlayerTooltip();
   }
 
+  // Bind or refresh the player tooltip used for brief on-map labels.
   public initPlayerTooltip() {
     this.playerMarker.bindTooltip("Player", {
       permanent: false,
@@ -96,52 +98,64 @@ class MapManager {
     });
   }
 
+  // Move the player marker to a new lat/lng and center the map there.
   movePlayer(latLng: leaflet.LatLng) {
     this.playerMarker.setLatLng(latLng);
     this.map.setView(latLng);
   }
 
+  // Update the player marker's tooltip text.
   updatePlayerStatus(text: string) {
     this.playerMarker.setTooltipContent(text);
   }
 
+  // Project a lat/lng into pixel coordinates at the given zoom.
   project(latlng: leaflet.LatLngExpression, zoom: number) {
     return this.map.project(leaflet.latLng(latlng), zoom);
   }
 
+  // Convert pixel coordinates back to a lat/lng at the given zoom.
   unproject(point: leaflet.Point, zoom: number) {
     return this.map.unproject(point, zoom);
   }
 
+  // Return the current map bounds as a LatLngBounds object.
   getBounds() {
     return this.map.getBounds();
   }
 
+  // Add a Leaflet layer to the map.
   addLayer(layer: leaflet.Layer) {
     this.map.addLayer(layer);
   }
 
+  // Attach an event handler to the underlying Leaflet map.
   on<E = unknown>(event: string, handler: (e: E) => void) {
     (this.map as unknown as { on: (evt: string, h: (e: E) => void) => void })
       .on(event, handler);
   }
 
+  // Open a popup on the map.
   openPopup(popup: leaflet.Popup) {
     popup.openOn(this.map);
   }
 
+  // Close a popup currently open on the map.
   closePopup(popup: leaflet.Popup) {
     this.map.closePopup(popup);
   }
 
+  // Programmatically set the map view to the given lat/lng and zoom.
   setView(latlng: leaflet.LatLngExpression, zoom?: number) {
     this.map.setView(latlng, zoom);
   }
 
+  // Enable user dragging of the map.
   enableDragging() {
     this.map.dragging.enable();
   }
 
+  // Disable user dragging of the map.
   disableDragging() {
     this.map.dragging.disable();
   }
@@ -174,15 +188,21 @@ class GridUtils {
   }
 
   getKey(cell: GridCell): string {
+    // Return a stable string key for a grid cell (used in maps/mementos).
     return `${cell.i}:${cell.j}`;
   }
 
   parseKey(key: string): GridCell {
+    // Parse a cell key string back into numeric indices.
     const [iStr, jStr] = key.split(":");
     return { i: Number(iStr), j: Number(jStr) };
   }
 
   latLngToCell(latlng: LatLng): GridCell {
+    // Compute the bounds (NW/SE lat/lng) for a given grid cell.
+    // Project lat/lng to world pixel coordinates at the grid zoom,
+    // compute the position relative to the origin anchor, then divide
+    // by the tile size to get integer grid indices.
     const pt = this.map.project(latlng, this.zoom);
     const relX = pt.x - this.origin.x;
     const relY = pt.y - this.origin.y;
@@ -209,6 +229,7 @@ class GridUtils {
   }
 
   distanceToPlayer(cell: GridCell): number {
+    // Manhattan distance (grid steps) between the cell and the player's cell.
     const playerLatLng = this.getPlayerLatLng();
     const playerPt = this.map.project(playerLatLng, this.zoom);
     const relX = playerPt.x - this.origin.x;
@@ -221,6 +242,7 @@ class GridUtils {
   }
 
   cellCenterLatLng(cell: GridCell): leaflet.LatLng {
+    // Compute the LatLng at the center of the given cell.
     const bounds = this.cellToLatLngBounds(cell);
     return bounds.getCenter();
   }
@@ -354,6 +376,18 @@ function setFreeLook(enabled: boolean) {
     mapManager.disableDragging();
 
     mapManager.setView(playerMarker.getLatLng(), GAMEPLAY_ZOOM_LEVEL);
+    // If the token manager is available, rebuild the visible grid so the
+    // camera-lock (programmatic follow) view matches the player's new
+    // position. Use `typeof` check to avoid referencing the const before
+    // it's initialized during startup.
+    try {
+      if (typeof tokenManager !== "undefined" && tokenManager) {
+        tokenManager.clearAll();
+        spawnTokens();
+      }
+    } catch {
+      // tokenManager not yet initialized; ignore
+    }
   } else {
     mapManager.enableDragging();
   }
@@ -392,6 +426,9 @@ function movePlayerBy(dx: number, dy: number) {
     mapManager.setView(newLatLng, GAMEPLAY_ZOOM_LEVEL);
   }
 
+  // Rebuild visible grid from scratch on every move: clear existing
+  // token layers/entries and spawn tokens for the new view.
+  tokenManager.clearAll();
   spawnTokens();
 }
 
@@ -560,6 +597,11 @@ class TokenManager {
     this.tokensMap.clear();
   }
 
+  // Remove all token layers and clear the internal tokens map.
+
+  // Determine visible grid cells for the current viewport and ensure
+  // tokens for those cells are present. Off-screen token layers are
+  // removed to free memory; logical state is preserved in the memento.
   spawnTokens() {
     const bounds = this.mapManager.getBounds();
     const nw = bounds.getNorthWest();
@@ -604,6 +646,11 @@ class TokenManager {
     }
   }
 
+  /**
+   * Update inventory and win UI elements.
+   *
+   * Uses flyweight check + deterministic generation, checks memento first
+   */
   public trySpawnCell(cell: GridCell) {
     const key = this.gridUtils.getKey(cell);
 
@@ -728,6 +775,8 @@ class TokenManager {
     if (tooltip) tooltip.setLatLng(center);
     return rect;
   }
+
+  // Create a visible rectangle layer for a token with the given exponent.
 }
 
 // Create the token manager
@@ -742,6 +791,7 @@ const tokenManager = new TokenManager(
   TOKEN_MAX_EXP,
   PROXIMITY_DETECT_RADIUS,
 );
+
 /**
  * Update inventory and win UI elements.
  *
@@ -840,7 +890,16 @@ function trySpawnCell(cell: GridCell) {
   tokenManager.trySpawnCell(cell);
 }
 
-mapManager.on("moveend", spawnTokens);
+// When the map finishes moving due to user dragging (free-look), rebuild
+// the visible grid from scratch. For programmatic moves (camera follow)
+// `movePlayerBy` already clears and spawns, so skip extra work.
+mapManager.on("moveend", () => {
+  if (freeLook) {
+    tokenManager.clearAll();
+    spawnTokens();
+  }
+});
+
 mapManager.on("zoomend", spawnTokens);
 mapManager.on("resize", spawnTokens);
 
@@ -892,7 +951,7 @@ mapManager.addLayer(leaflet.gridLayer({
   tileSize: TILE_SIZE_PX,
 }));
 
-// For testing: UI shows grid cell info when user clicks the map (uses our conversion helpers)
+// For testing: UI shows grid cell info when user clicks the map
 /*
 map.on("click", (e: LeafletMouseEvent) => {
   const cell = gridUtils!.latLngToCell(e.latlng);
