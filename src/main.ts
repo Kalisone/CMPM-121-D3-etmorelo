@@ -248,48 +248,160 @@ class GridUtils {
   }
 }
 
-// Create basic UI elements
-const controlPanelDiv = document.createElement("div");
-controlPanelDiv.id = "controlPanel";
-
-const mapDiv = document.createElement("div");
-mapDiv.id = "map";
-document.body.append(mapDiv);
-mapDiv.append(controlPanelDiv);
-
-const inventoryBadge = document.createElement("div");
-inventoryBadge.id = "inventoryBadge";
-inventoryBadge.innerText = "Holding: none";
-mapDiv.append(inventoryBadge);
-
-const winBanner = document.createElement("div");
-winBanner.id = "winBanner";
-winBanner.innerHTML = `
-  <div>You win!</div>
-  <div style="margin-top:10px;"><button id="playAgain">Play again</button></div>
+const EYE_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
+    <circle cx="12" cy="12" r="3"></circle>
+  </svg>
 `;
-winBanner.style.display = "none";
-mapDiv.append(winBanner);
 
-/**
- * Reset the game state and respawn tokens.
- *
- * Resets the `gameState` (clears held token and collected set) and
- * instructs the `TokenManager` to remove existing token layers and
- * spawn new tokens for the current view.
- */
-function playAgain() {
-  gameState.reset();
-  boardState.reset();
-  tokenManager.clearAll();
-  tokenManager.spawnTokens();
+const PIN_SVG = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 10c0 6-9 13-9 13S3 16 3 10a9 9 0 1118 0z"></path>
+    <circle cx="12" cy="10" r="2"></circle>
+  </svg>
+`;
+
+const DIRECTIONS = [
+  { label: "↑", dx: 0, dy: -1, aria: "Move up" },
+  { label: "←", dx: -1, dy: 0, aria: "Move left" },
+  { label: "→", dx: 1, dy: 0, aria: "Move right" },
+  { label: "↓", dx: 0, dy: 1, aria: "Move down" },
+];
+
+// UI Manager encapsulates DOM creation and event wiring
+class UIManager {
+  private controlPanel: HTMLElement;
+  private inventoryBadge: HTMLElement;
+  private winBanner: HTMLElement;
+  private currentFreeLook = false;
+  private onToggle?: (enabled: boolean) => void;
+
+  constructor(
+    private containerId: string,
+    private onMove: (dx: number, dy: number) => void,
+    private onReset: () => void,
+  ) {
+    const mapDiv = document.createElement("div");
+    mapDiv.id = this.containerId;
+    document.body.append(mapDiv);
+
+    this.controlPanel = document.createElement("div");
+    this.controlPanel.id = "controlPanel";
+    mapDiv.append(this.controlPanel);
+
+    this.inventoryBadge = document.createElement("div");
+    this.inventoryBadge.id = "inventoryBadge";
+    this.inventoryBadge.innerText = "Holding: none";
+    mapDiv.append(this.inventoryBadge);
+
+    this.winBanner = document.createElement("div");
+    this.winBanner.id = "winBanner";
+    this.winBanner.innerHTML = `
+      <div>You win!</div>
+      <div style="margin-top:10px;"><button id="playAgain">Play again</button></div>
+    `;
+    this.winBanner.style.display = "none";
+    mapDiv.append(this.winBanner);
+
+    // Play again listener
+    this.winBanner.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      if (target && target.id === "playAgain") this.onReset();
+    });
+
+    this.buildDirectionalControls();
+  }
+
+  private buildDirectionalControls() {
+    const controlsContainer = document.createElement("div");
+    controlsContainer.id = "directionalControls";
+    controlsContainer.className = "directional-controls";
+
+    const buttons: HTMLButtonElement[] = [];
+    for (let i = 0; i < 5; i++) {
+      const b = document.createElement("button");
+      b.type = "button";
+      buttons.push(b);
+    }
+
+    // Assign labels and aria-labels
+    for (let i = 0; i < 4; i++) {
+      buttons[i].innerText = DIRECTIONS[i].label;
+    }
+    buttons[4].innerHTML = PIN_SVG;
+    buttons[4].setAttribute("aria-label", "Toggle free-look");
+
+    for (let idx = 0; idx < buttons.length; idx++) {
+      const button = buttons[idx];
+      if (idx < 4) {
+        const dir = DIRECTIONS[idx];
+        button.addEventListener("click", () => {
+          this.onMove(dir.dx, dir.dy);
+        });
+      } else {
+        button.addEventListener("click", () => {
+          const newState = !this.currentFreeLook;
+          this.currentFreeLook = newState;
+          if (this.onToggle) this.onToggle(newState);
+          button.innerHTML = newState ? EYE_SVG : PIN_SVG;
+        });
+      }
+    }
+
+    const rowTop = document.createElement("div");
+    rowTop.className = "directional-row row-top";
+    rowTop.appendChild(buttons[0]);
+
+    const rowMiddle = document.createElement("div");
+    rowMiddle.className = "directional-row row-middle";
+    rowMiddle.appendChild(buttons[1]);
+    rowMiddle.appendChild(buttons[4]);
+    rowMiddle.appendChild(buttons[2]);
+
+    const rowBottom = document.createElement("div");
+    rowBottom.className = "directional-row row-bottom";
+    rowBottom.appendChild(buttons[3]);
+
+    controlsContainer.appendChild(rowTop);
+    controlsContainer.appendChild(rowMiddle);
+    controlsContainer.appendChild(rowBottom);
+
+    this.controlPanel.appendChild(controlsContainer);
+  }
+
+  updateInventory(label: string) {
+    this.inventoryBadge.innerText = label;
+  }
+
+  toggleWinState(hasWon: boolean) {
+    if (hasWon) {
+      this.winBanner.classList.add("show-win");
+    } else {
+      this.winBanner.classList.remove("show-win");
+    }
+  }
+
+  setReset(onReset: () => void) {
+    // Replace reset handler used by the play-again button
+    this.onReset = onReset;
+  }
+
+  setMoveHandler(onMove: (dx: number, dy: number) => void) {
+    this.onMove = onMove;
+  }
+
+  setToggleHandler(onToggle: (enabled: boolean) => void) {
+    this.onToggle = onToggle;
+  }
 }
 
-// Attach listener to the Play Again button once the element exists
-winBanner.addEventListener("click", (e) => {
-  const target = e.target as HTMLElement;
-  if (target && target.id === "playAgain") playAgain();
-});
+// Instantiate UI manager (map element needs to exist before MapManager)
+const uiManager = new UIManager(
+  "map",
+  (dx, dy) => movePlayerBy(dx, dy),
+  () => {},
+);
 
 // Our classroom location
 // Centralized game tuning/configuration
@@ -351,27 +463,6 @@ updateUI();
  * time and a toggle for free-look mode. Controls include accessibility
  * attributes and minimal state handling.
  */
-
-const EYE_SVG = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
-    <circle cx="12" cy="12" r="3"></circle>
-  </svg>
-`;
-
-const PIN_SVG = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M21 10c0 6-9 13-9 13S3 16 3 10a9 9 0 1118 0z"></path>
-    <circle cx="12" cy="10" r="2"></circle>
-  </svg>
-`;
-
-const DIRECTIONS = [
-  { label: "↑", dx: 0, dy: -1, aria: "Move up" },
-  { label: "←", dx: -1, dy: 0, aria: "Move left" },
-  { label: "→", dx: 1, dy: 0, aria: "Move right" },
-  { label: "↓", dx: 0, dy: 1, aria: "Move down" },
-];
 
 /**
  * Toggle free-look (map dragging) mode.
@@ -478,64 +569,7 @@ function updatePlayerTooltip() {
  * Returns a DOM element containing directional buttons and a center
  * toggle. Buttons are wired to call `movePlayerBy` and `setFreeLook`.
  */
-function createDirectionalControls() {
-  const controlsContainer = document.createElement("div");
-  controlsContainer.id = "directionalControls";
-  controlsContainer.className = "directional-controls";
-
-  const buttons: HTMLButtonElement[] = [];
-  for (let i = 0; i < 5; i++) {
-    const b = document.createElement("button");
-    b.type = "button";
-    buttons.push(b);
-  }
-
-  // Assign labels and aria-labels
-  for (let i = 0; i < 4; i++) {
-    buttons[i].innerText = DIRECTIONS[i].label;
-  }
-  buttons[4].innerHTML = PIN_SVG;
-  buttons[4].setAttribute("aria-label", "Toggle free-look");
-
-  for (let idx = 0; idx < buttons.length; idx++) {
-    const button = buttons[idx];
-    if (idx < 4) {
-      const dir = DIRECTIONS[idx];
-      button.addEventListener("click", () => {
-        movePlayerBy(dir.dx, dir.dy);
-      });
-    } else {
-      button.addEventListener("click", () => {
-        const newState = !freeLook;
-        setFreeLook(newState);
-        button.innerHTML = newState ? EYE_SVG : PIN_SVG;
-      });
-    }
-  }
-
-  const rowTop = document.createElement("div");
-  rowTop.className = "directional-row row-top";
-  rowTop.appendChild(buttons[0]);
-
-  const rowMiddle = document.createElement("div");
-  rowMiddle.className = "directional-row row-middle";
-  rowMiddle.appendChild(buttons[1]);
-  rowMiddle.appendChild(buttons[4]);
-  rowMiddle.appendChild(buttons[2]);
-
-  const rowBottom = document.createElement("div");
-  rowBottom.className = "directional-row row-bottom";
-  rowBottom.appendChild(buttons[3]);
-
-  controlsContainer.appendChild(rowTop);
-  controlsContainer.appendChild(rowMiddle);
-  controlsContainer.appendChild(rowBottom);
-
-  return controlsContainer;
-}
-
-controlPanelDiv.appendChild(createDirectionalControls());
-
+// directional controls are built inside `UIManager` now
 setFreeLook(freeLook);
 
 /*
@@ -833,6 +867,189 @@ const tokenManager = new TokenManager(
 );
 
 /**
+ * Game class that encapsulates higher-level game operations and ties
+ * together the map, UI, token manager and state containers. This class
+ * wraps existing global functions so the codebase can migrate towards
+ * an object-oriented structure without changing program flow.
+ */
+class Game {
+  private freeLook: boolean = false;
+
+  constructor(
+    private readonly mapManager: MapManager,
+    private readonly gridUtils: GridUtils,
+    private readonly gameState: GameStateManager,
+    private readonly uiManager: UIManager,
+    private readonly boardState: BoardState,
+    private tokenManager?: TokenManager,
+  ) {}
+
+  handlePlayerMove(dx: number, dy: number) {
+    const current = this.mapManager.playerMarker.getLatLng();
+    const currentPt = this.mapManager.project(
+      current,
+      GameConfig.GAMEPLAY_ZOOM_LEVEL,
+    );
+
+    const relX = currentPt.x - WORLD_ORIGIN_POINT.x;
+    const relY = currentPt.y - WORLD_ORIGIN_POINT.y;
+
+    const newRelX = relX + dx * GameConfig.TILE_SIZE_PX;
+    const newRelY = relY + dy * GameConfig.TILE_SIZE_PX;
+
+    const newWorldX = WORLD_ORIGIN_POINT.x + newRelX;
+    const newWorldY = WORLD_ORIGIN_POINT.y + newRelY;
+    const newLatLng = this.mapManager.unproject(
+      leaflet.point(newWorldX, newWorldY),
+      GameConfig.GAMEPLAY_ZOOM_LEVEL,
+    );
+
+    this.mapManager.playerMarker.setLatLng(newLatLng);
+    this.onStateChange();
+
+    if (!this.freeLook) {
+      this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
+    }
+
+    // Rebuild visible grid from scratch on every move
+    this.tokenManager?.clearAll();
+    this.spawnTokens();
+  }
+
+  setTokenManager(tm: TokenManager) {
+    this.tokenManager = tm;
+  }
+
+  onStateChange() {
+    try {
+      this.updateStatusPanel();
+      this.updatePlayerTooltip();
+    } catch (error) {
+      console.log("Error updating UI", error);
+    }
+  }
+
+  updateStatusPanel() {
+    const holding = this.gameState.heldToken
+      ? `Holding: ${2 ** this.gameState.heldToken.exp}`
+      : "Holding: none";
+    this.uiManager.updateInventory(holding);
+    this.uiManager.toggleWinState(this.gameState.hasWon);
+  }
+
+  updatePlayerTooltip() {
+    try {
+      const latlng = this.mapManager.playerMarker.getLatLng();
+      const cell = this.gridUtils.latLngToCell(latlng);
+      const content = `Player ${this.gridUtils.getKey(cell)}`;
+      const t = this.mapManager.playerMarker.getTooltip();
+      if (t) {
+        t.setContent(content);
+      } else {
+        this.mapManager.playerMarker.bindTooltip(content, {
+          permanent: false,
+          direction: "top",
+          className: "player-label",
+        });
+      }
+    } catch (error) {
+      console.log("Error updating player tooltip", error);
+    }
+  }
+
+  openTempPopup(
+    latlng: LatLng,
+    content: string,
+    duration = GameConfig.SPAWN_ANIMATION_DURATION_MS,
+  ) {
+    const popup = leaflet.popup({ closeButton: false, autoClose: true })
+      .setLatLng(latlng)
+      .setContent(content);
+    this.mapManager.openPopup(popup);
+    setTimeout(() => this.mapManager.closePopup(popup), duration);
+  }
+
+  spawnTokens() {
+    const bounds = this.mapManager.getBounds();
+
+    const nw = bounds.getNorthWest();
+    const se = bounds.getSouthEast();
+
+    const nwPt = this.mapManager.project(nw, GameConfig.GAMEPLAY_ZOOM_LEVEL);
+    const sePt = this.mapManager.project(se, GameConfig.GAMEPLAY_ZOOM_LEVEL);
+
+    const nwRelX = nwPt.x - WORLD_ORIGIN_POINT.x;
+    const seRelX = sePt.x - WORLD_ORIGIN_POINT.x;
+    const nwRelY = nwPt.y - WORLD_ORIGIN_POINT.y;
+    const seRelY = sePt.y - WORLD_ORIGIN_POINT.y;
+
+    const minI = Math.floor(Math.min(nwRelX, seRelX) / GameConfig.TILE_SIZE_PX);
+    const maxI = Math.floor(
+      (Math.max(nwRelX, seRelX) - 1) / GameConfig.TILE_SIZE_PX,
+    );
+    const minJ = Math.floor(Math.min(nwRelY, seRelY) / GameConfig.TILE_SIZE_PX);
+    const maxJ = Math.floor(
+      (Math.max(nwRelY, seRelY) - 1) / GameConfig.TILE_SIZE_PX,
+    );
+
+    for (let i = minI; i <= maxI; i++) {
+      for (let j = minJ; j <= maxJ; j++) {
+        this.trySpawnCell({ i, j });
+      }
+    }
+  }
+
+  trySpawnCell(cell: GridCell) {
+    const key = this.gridUtils.getKey(cell);
+    const m = this.boardState.get(key);
+    if (m && m.hasToken === false) return;
+    this.tokenManager?.trySpawnCell(cell);
+  }
+
+  setFreeLook(enabled: boolean) {
+    this.freeLook = enabled;
+    if (!enabled) {
+      this.mapManager.disableDragging();
+      this.mapManager.setView(
+        this.mapManager.playerMarker.getLatLng(),
+        GameConfig.GAMEPLAY_ZOOM_LEVEL,
+      );
+      try {
+        if (this.tokenManager) {
+          this.tokenManager.clearAll();
+          this.spawnTokens();
+        }
+      } catch {
+        // ignore
+      }
+    } else {
+      this.mapManager.enableDragging();
+    }
+  }
+
+  resetGame() {
+    this.gameState.reset();
+    this.boardState.reset();
+    this.tokenManager?.clearAll();
+    this.spawnTokens();
+  }
+}
+
+// Instantiate the Game object to start migrating global behaviors
+const game = new Game(
+  mapManager,
+  gridUtils,
+  gameState,
+  uiManager,
+  boardState,
+  tokenManager,
+);
+
+// Wire the UI reset and move handlers to the Game instance
+uiManager.setReset(() => game.resetGame());
+uiManager.setMoveHandler((dx, dy) => game.handlePlayerMove(dx, dy));
+
+/**
  * Update inventory and win UI elements.
  *
  * Reads `gameState` to set the on-map inventory badge and to toggle the
@@ -842,14 +1059,9 @@ function updateStatusPanel() {
   const holding = gameState.heldToken
     ? `Holding: ${2 ** gameState.heldToken.exp}`
     : "Holding: none";
-  // Also update the on-map inventory badge
-  if (inventoryBadge) inventoryBadge.innerText = holding;
-  // Show win banner when player is holding the max-value token (manager tracks win state)
-  if (gameState.hasWon) {
-    winBanner.classList.add("show-win");
-  } else {
-    winBanner.classList.remove("show-win");
-  }
+  // Update the on-map inventory badge and win banner via UI manager
+  uiManager.updateInventory(holding);
+  uiManager.toggleWinState(gameState.hasWon);
 }
 updateUI();
 
