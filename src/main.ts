@@ -12,6 +12,14 @@ interface Token {
   exp: number;
 }
 
+/**
+ * GameStateManager
+ *
+ * Tracks the player's current held token, which grid cells have been
+ * collected during this play session, and whether the win condition
+ * has been met. Exposes methods to mutate state and notify a
+ * UI/state-change callback.
+ */
 class GameStateManager {
   public heldToken: Token | null = null;
   public collectedSet: Set<string> = new Set();
@@ -21,19 +29,15 @@ class GameStateManager {
     private readonly winValue: number,
     private onStateChange: () => void,
   ) {}
-  // Return whether a cell key has been collected this session.
   isCollected(key: string): boolean {
     return this.collectedSet.has(key);
   }
-
-  // Pick up a token into the player's held slot and mark the cell collected.
   collectToken(token: Token) {
     this.heldToken = token;
     this.collectedSet.add(token.key);
     this.checkWinCondition();
     this.onStateChange();
   }
-  // Increment the held token's exponent (used when crafting/upgrading).
   upgradeHeldToken() {
     if (this.heldToken) {
       this.heldToken.exp++;
@@ -41,19 +45,16 @@ class GameStateManager {
       this.onStateChange();
     }
   }
-  // Reset game progress for a new play session.
   reset() {
     this.heldToken = null;
     this.collectedSet.clear();
     this.hasWon = false;
     this.onStateChange();
   }
-  // Drop the token the player is carrying without changing collected cells.
   clearHeldToken() {
     this.heldToken = null;
     this.onStateChange();
   }
-  // Internal: mark `hasWon` when held token reaches target value.
   private checkWinCondition() {
     if (this.heldToken && (2 ** this.heldToken.exp) === this.winValue) {
       this.hasWon = true;
@@ -61,6 +62,13 @@ class GameStateManager {
   }
 }
 
+/**
+ * MapManager
+ *
+ * Lightweight wrapper around a Leaflet map instance that centralizes
+ * common map operations used throughout the app (marker, view, layer
+ * management and event hookup).
+ */
 class MapManager {
   public map: leaflet.Map;
   public playerMarker: leaflet.Marker;
@@ -88,8 +96,6 @@ class MapManager {
     this.playerMarker = leaflet.marker(center).addTo(this.map);
     this.initPlayerTooltip();
   }
-
-  // Bind or refresh the player tooltip used for brief on-map labels.
   public initPlayerTooltip() {
     this.playerMarker.bindTooltip("Player", {
       permanent: false,
@@ -97,34 +103,22 @@ class MapManager {
       className: "player-label",
     });
   }
-
-  // Move the player marker to a new lat/lng and center the map there.
   movePlayer(latLng: leaflet.LatLng) {
     this.playerMarker.setLatLng(latLng);
     this.map.setView(latLng);
   }
-
-  // Update the player marker's tooltip text.
   updatePlayerStatus(text: string) {
     this.playerMarker.setTooltipContent(text);
   }
-
-  // Project a lat/lng into pixel coordinates at the given zoom.
   project(latlng: leaflet.LatLngExpression, zoom: number) {
     return this.map.project(leaflet.latLng(latlng), zoom);
   }
-
-  // Convert pixel coordinates back to a lat/lng at the given zoom.
   unproject(point: leaflet.Point, zoom: number) {
     return this.map.unproject(point, zoom);
   }
-
-  // Return the current map bounds as a LatLngBounds object.
   getBounds() {
     return this.map.getBounds();
   }
-
-  // Add a Leaflet layer to the map.
   addLayer(layer: leaflet.Layer) {
     this.map.addLayer(layer);
   }
@@ -139,23 +133,15 @@ class MapManager {
   openPopup(popup: leaflet.Popup) {
     popup.openOn(this.map);
   }
-
-  // Close a popup currently open on the map.
   closePopup(popup: leaflet.Popup) {
     this.map.closePopup(popup);
   }
-
-  // Programmatically set the map view to the given lat/lng and zoom.
   setView(latlng: leaflet.LatLngExpression, zoom?: number) {
     this.map.setView(latlng, zoom);
   }
-
-  // Enable user dragging of the map.
   enableDragging() {
     this.map.dragging.enable();
   }
-
-  // Disable user dragging of the map.
   disableDragging() {
     this.map.dragging.disable();
   }
@@ -166,6 +152,13 @@ interface GridCell {
   j: number;
 }
 
+/**
+ * GridUtils
+ *
+ * Provides conversions between world pixel coordinates and the
+ * logical grid used by the game: mapping lat/lng to tile indices,
+ * computing cell bounds and distances relative to the player.
+ */
 class GridUtils {
   private map: leaflet.Map;
   private origin: leaflet.Point;
@@ -188,21 +181,17 @@ class GridUtils {
   }
 
   getKey(cell: GridCell): string {
-    // Return a stable string key for a grid cell (used in maps/mementos).
     return `${cell.i}:${cell.j}`;
   }
 
   parseKey(key: string): GridCell {
-    // Parse a cell key string back into numeric indices.
     const [iStr, jStr] = key.split(":");
     return { i: Number(iStr), j: Number(jStr) };
   }
 
   latLngToCell(latlng: LatLng): GridCell {
-    // Compute the bounds (NW/SE lat/lng) for a given grid cell.
-    // Project lat/lng to world pixel coordinates at the grid zoom,
-    // compute the position relative to the origin anchor, then divide
-    // by the tile size to get integer grid indices.
+    // Convert a LatLng into integer grid indices based on the world
+    // origin and configured tile size.
     const pt = this.map.project(latlng, this.zoom);
     const relX = pt.x - this.origin.x;
     const relY = pt.y - this.origin.y;
@@ -229,7 +218,6 @@ class GridUtils {
   }
 
   distanceToPlayer(cell: GridCell): number {
-    // Manhattan distance (grid steps) between the cell and the player's cell.
     const playerLatLng = this.getPlayerLatLng();
     const playerPt = this.map.project(playerLatLng, this.zoom);
     const relX = playerPt.x - this.origin.x;
@@ -242,7 +230,6 @@ class GridUtils {
   }
 
   cellCenterLatLng(cell: GridCell): leaflet.LatLng {
-    // Compute the LatLng at the center of the given cell.
     const bounds = this.cellToLatLngBounds(cell);
     return bounds.getCenter();
   }
@@ -269,7 +256,6 @@ const DIRECTIONS = [
   { label: "↓", dx: 0, dy: 1, aria: "Move down" },
 ];
 
-// UI Manager encapsulates DOM creation and event wiring
 class UIManager {
   private controlPanel: HTMLElement;
   private inventoryBadge: HTMLElement;
@@ -304,7 +290,7 @@ class UIManager {
     this.winBanner.style.display = "none";
     mapDiv.append(this.winBanner);
 
-    // Play again listener
+    // Play again button listener
     this.winBanner.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
       if (target && target.id === "playAgain") this.onReset();
@@ -325,7 +311,7 @@ class UIManager {
       buttons.push(b);
     }
 
-    // Assign labels and aria-labels
+    // Assign labels and aria attributes
     for (let i = 0; i < 4; i++) {
       buttons[i].innerText = DIRECTIONS[i].label;
     }
@@ -397,11 +383,15 @@ class UIManager {
 }
 
 // Instantiate UI manager (map element needs to exist before MapManager)
+// Use no-op handlers here and wire real handlers after `game` exists.
 const uiManager = new UIManager(
   "map",
-  (dx, dy) => movePlayerBy(dx, dy),
+  (_dx, _dy) => {},
   () => {},
 );
+
+// Wire the UI toggle to the free-look setter so clicks enable/disable dragging.
+uiManager.setToggleHandler((enabled: boolean) => setFreeLook(enabled));
 
 // Our classroom location
 // Centralized game tuning/configuration
@@ -472,6 +462,13 @@ updateUI();
  * user can pan independently of the player's marker.
  */
 function setFreeLook(enabled: boolean) {
+  // Prefer Game method when available (new OO entrypoint).
+  const _g1 = (globalThis as unknown as { game?: Game }).game;
+  if (_g1) {
+    _g1.setFreeLook(enabled);
+    return;
+  }
+
   freeLook = enabled;
 
   if (!enabled) {
@@ -487,7 +484,7 @@ function setFreeLook(enabled: boolean) {
     // it's initialized during startup.
     try {
       if (typeof tokenManager !== "undefined" && tokenManager) {
-        tokenManager.clearAll();
+        tokenManager.reconcileVisible();
         spawnTokens();
       }
     } catch {
@@ -507,35 +504,6 @@ let freeLook = false;
  * space aligned to the grid anchor), updates the tooltip/UI, and spawns
  * tokens for newly-visible cells.
  */
-function movePlayerBy(dx: number, dy: number) {
-  const current = playerMarker.getLatLng();
-  const currentPt = mapManager.project(current, GameConfig.GAMEPLAY_ZOOM_LEVEL);
-
-  const relX = currentPt.x - WORLD_ORIGIN_POINT.x;
-  const relY = currentPt.y - WORLD_ORIGIN_POINT.y;
-
-  const newRelX = relX + dx * GameConfig.TILE_SIZE_PX;
-  const newRelY = relY + dy * GameConfig.TILE_SIZE_PX;
-
-  const newWorldX = WORLD_ORIGIN_POINT.x + newRelX;
-  const newWorldY = WORLD_ORIGIN_POINT.y + newRelY;
-  const newLatLng = mapManager.unproject(
-    leaflet.point(newWorldX, newWorldY),
-    GameConfig.GAMEPLAY_ZOOM_LEVEL,
-  );
-
-  playerMarker.setLatLng(newLatLng);
-  updateUI();
-
-  if (!freeLook) {
-    mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
-  }
-
-  // Rebuild visible grid from scratch on every move: clear existing
-  // token layers/entries and spawn tokens for the new view.
-  tokenManager.clearAll();
-  spawnTokens();
-}
 
 /**
  * Update the player's tooltip to display the current grid cell key.
@@ -544,6 +512,17 @@ function movePlayerBy(dx: number, dy: number) {
  * updates or binds the tooltip accordingly.
  */
 function updatePlayerTooltip() {
+  // Delegate to Game when available.
+  const _g2 = (globalThis as unknown as { game?: Game }).game;
+  if (_g2) {
+    try {
+      _g2.updatePlayerTooltip();
+    } catch (error) {
+      console.log("Error updating player tooltip via game", error);
+    }
+    return;
+  }
+
   try {
     const latlng = playerMarker.getLatLng();
     const cell = gridUtils!.latLngToCell(latlng);
@@ -569,7 +548,6 @@ function updatePlayerTooltip() {
  * Returns a DOM element containing directional buttons and a center
  * toggle. Buttons are wired to call `movePlayerBy` and `setFreeLook`.
  */
-// directional controls are built inside `UIManager` now
 setFreeLook(freeLook);
 
 /*
@@ -617,6 +595,11 @@ const WIN_VALUE = Math.pow(2, GameConfig.TOKEN_MAX_EXP);
 
 const gameState = new GameStateManager(WIN_VALUE, updateUI);
 
+// Declare `game` early as undefined so other startup helpers can safely
+// check for its presence without triggering the temporal dead zone.
+// deno-lint-ignore prefer-const
+let game: Game | undefined;
+
 // TokenManager encapsulates token layer and spawn logic
 class TokenManager {
   public tokensLayer: leaflet.LayerGroup;
@@ -659,12 +642,10 @@ class TokenManager {
     this.tokensMap.clear();
   }
 
-  // Remove all token layers and clear the internal tokens map.
-
-  // Determine visible grid cells for the current viewport and ensure
-  // tokens for those cells are present. Off-screen token layers are
-  // removed to free memory; logical state is preserved in the memento.
-  spawnTokens() {
+  // Reconcile visible tokens against the current viewport without
+  // clearing everything. This removes off-screen token layers and
+  // creates missing token layers for newly-visible cells.
+  reconcileVisible() {
     const bounds = this.mapManager.getBounds();
     const nw = bounds.getNorthWest();
     const se = bounds.getSouthEast();
@@ -681,7 +662,6 @@ class TokenManager {
     const minJ = Math.floor(Math.min(nwRelY, seRelY) / this.tileSize);
     const maxJ = Math.floor((Math.max(nwRelY, seRelY) - 1) / this.tileSize);
 
-    // Build a set of visible cell keys for this viewport.
     const visibleKeys = new Set<string>();
     for (let i = minI; i <= maxI; i++) {
       for (let j = minJ; j <= maxJ; j++) {
@@ -689,8 +669,7 @@ class TokenManager {
       }
     }
 
-    // Cleanup: remove layers for tokens that are no longer visible to
-    // free memory, logical state kept in memento
+    // Remove off-screen token layers
     for (const [k, v] of Array.from(this.tokensMap.entries())) {
       if (!visibleKeys.has(k)) {
         if (this.tokensLayer.hasLayer(v.layer)) {
@@ -700,12 +679,23 @@ class TokenManager {
       }
     }
 
-    // Spawn tokens for visible cells (flyweight checks occur in trySpawnCell)
-    for (let i = minI; i <= maxI; i++) {
-      for (let j = minJ; j <= maxJ; j++) {
-        this.trySpawnCell({ i, j });
+    // Add tokens for newly-visible cells only
+    for (const key of visibleKeys) {
+      if (!this.tokensMap.has(key)) {
+        const cell = this.gridUtils.parseKey(key);
+        this.trySpawnCell(cell);
       }
     }
+  }
+
+  // Remove all token layers and clear the internal tokens map.
+
+  // Determine visible grid cells for the current viewport and ensure
+  // tokens for those cells are present. Off-screen token layers are
+  // removed to free memory; logical state is preserved in the memento.
+  spawnTokens() {
+    // Reconcile visible tokens (adds new, removes off-screen)
+    this.reconcileVisible();
   }
 
   /**
@@ -873,7 +863,7 @@ const tokenManager = new TokenManager(
  * an object-oriented structure without changing program flow.
  */
 class Game {
-  private freeLook: boolean = false;
+  public freeLook: boolean = false;
 
   constructor(
     private readonly mapManager: MapManager,
@@ -911,8 +901,7 @@ class Game {
       this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
     }
 
-    // Rebuild visible grid from scratch on every move
-    this.tokenManager?.clearAll();
+    // Rebuild visible grid from scratch on every move (reconcile instead of clearing)
     this.spawnTokens();
   }
 
@@ -1016,7 +1005,6 @@ class Game {
       );
       try {
         if (this.tokenManager) {
-          this.tokenManager.clearAll();
           this.spawnTokens();
         }
       } catch {
@@ -1036,7 +1024,7 @@ class Game {
 }
 
 // Instantiate the Game object to start migrating global behaviors
-const game = new Game(
+game = new Game(
   mapManager,
   gridUtils,
   gameState,
@@ -1045,9 +1033,18 @@ const game = new Game(
   tokenManager,
 );
 
-// Wire the UI reset and move handlers to the Game instance
-uiManager.setReset(() => game.resetGame());
-uiManager.setMoveHandler((dx, dy) => game.handlePlayerMove(dx, dy));
+// Make the `game` instance available on `globalThis` so startup helpers
+// can check for presence without causing TDZ errors by referencing the
+// `game` identifier itself.
+(globalThis as unknown as { game?: Game }).game = game;
+
+// Wire the UI reset and move handlers to the Game instance (guarded)
+uiManager.setReset(() =>
+  (globalThis as unknown as { game?: Game }).game?.resetGame()
+);
+uiManager.setMoveHandler((dx, dy) =>
+  (globalThis as unknown as { game?: Game }).game?.handlePlayerMove(dx, dy)
+);
 
 /**
  * Update inventory and win UI elements.
@@ -1056,6 +1053,17 @@ uiManager.setMoveHandler((dx, dy) => game.handlePlayerMove(dx, dy));
  * win banner when the player has obtained the winning token value.
  */
 function updateStatusPanel() {
+  // Prefer Game's status panel when available
+  const _g3 = (globalThis as unknown as { game?: Game }).game;
+  if (_g3) {
+    try {
+      _g3.updateStatusPanel();
+    } catch (error) {
+      console.log("Error updating status via game", error);
+    }
+    return;
+  }
+
   const holding = gameState.heldToken
     ? `Holding: ${2 ** gameState.heldToken.exp}`
     : "Holding: none";
@@ -1073,8 +1081,14 @@ updateUI();
  */
 function updateUI() {
   try {
-    updateStatusPanel();
-    updatePlayerTooltip();
+    // Game has its own UI update orchestration; prefer it when present.
+    const _g4 = (globalThis as unknown as { game?: Game }).game;
+    if (_g4) {
+      _g4.onStateChange();
+    } else {
+      updateStatusPanel();
+      updatePlayerTooltip();
+    }
   } catch (error) {
     console.log("Error updating UI", error);
   }
@@ -1082,13 +1096,20 @@ function updateUI() {
 
 /**
  * Show a temporary popup at `latlng` with the provided content and auto-
- * close it after `duration` milliseconds.
+ * close it after `duration` milliseconds. Used for testing.
  */
 function _openTempPopup(
   latlng: LatLng,
   content: string,
   duration = GameConfig.SPAWN_ANIMATION_DURATION_MS,
 ) {
+  // Prefer Game method if present
+  const _g5 = (globalThis as unknown as { game?: Game }).game;
+  if (_g5) {
+    _g5.openTempPopup(latlng, content, duration);
+    return;
+  }
+
   const popup = leaflet.popup({ closeButton: false, autoClose: true })
     .setLatLng(latlng)
     .setContent(content);
@@ -1104,6 +1125,13 @@ function _openTempPopup(
  * to `trySpawnCell` for each cell.
  */
 function spawnTokens() {
+  // Delegate to Game when available; otherwise use the existing logic.
+  const _g6 = (globalThis as unknown as { game?: Game }).game;
+  if (_g6) {
+    _g6.spawnTokens();
+    return;
+  }
+
   const bounds = mapManager.getBounds();
 
   const nw = bounds.getNorthWest();
@@ -1143,6 +1171,17 @@ function trySpawnCell(cell: GridCell) {
   const m = boardState.get(key);
   if (m && m.hasToken === false) return;
 
+  const _g7 = (globalThis as unknown as { game?: Game }).game;
+  if (_g7) {
+    // Prefer Game delegation when available
+    try {
+      _g7.trySpawnCell(cell);
+    } catch {
+      tokenManager.trySpawnCell(cell);
+    }
+    return;
+  }
+
   tokenManager.trySpawnCell(cell);
 }
 
@@ -1150,14 +1189,24 @@ function trySpawnCell(cell: GridCell) {
 // the visible grid from scratch. For programmatic moves (camera follow)
 // `movePlayerBy` already clears and spawns, so skip extra work.
 mapManager.on("moveend", () => {
+  // Prefer Game-managed behavior when available
+  const _g8 = (globalThis as unknown as { game?: Game }).game;
+  if (_g8) {
+    if (_g8.freeLook) {
+      tokenManager.reconcileVisible();
+      _g8.spawnTokens();
+    }
+    return;
+  }
+
   if (freeLook) {
-    tokenManager.clearAll();
+    tokenManager.reconcileVisible();
     spawnTokens();
   }
 });
 
-mapManager.on("zoomend", spawnTokens);
-mapManager.on("resize", spawnTokens);
+mapManager.on("zoomend", () => spawnTokens());
+mapManager.on("resize", () => spawnTokens());
 
 spawnTokens();
 
@@ -1206,19 +1255,3 @@ leaflet.gridLayer = function (opts) {
 mapManager.addLayer(leaflet.gridLayer({
   tileSize: GameConfig.TILE_SIZE_PX,
 }));
-
-// For testing: UI shows grid cell info when user clicks the map
-/*
-map.on("click", (e: LeafletMouseEvent) => {
-  const cell = gridUtils!.latLngToCell(e.latlng);
-  const bounds = gridUtils!.cellToLatLngBounds(cell);
-  const nw = bounds.getNorthWest();
-  const se = bounds.getSouthEast();
-  const content = `Cell: ${gridUtils!.getKey(cell)}<br/>NW: ${nw.lat.toFixed(6)}, ${
-    nw.lng.toFixed(6)
-  }<br/>SE: ${se.lat.toFixed(6)}, ${se.lng.toFixed(6)}`;
-  openTempPopup(e.latlng, content, 1600);
-});
-
-map.setView([0, 0], GAMEPLAY_ZOOM_LEVEL);
-*/
