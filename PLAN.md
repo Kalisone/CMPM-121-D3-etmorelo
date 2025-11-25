@@ -78,6 +78,6 @@ Key gameplay challenge: Can the map "remember" changes (collected items, deposit
 
 - [x] Implement a "Flyweight" check during rendering: Check the global Map first; if a cell exists there, use its data. If not, generate the cell deterministically.
 
-- [] Implement visual cleanup: Destroy Leaflet layers/DOM elements for cells that go off-screen to free up memory.
+- [x] Implement visual cleanup: Destroy Leaflet layers/DOM elements for cells that go off-screen to free up memory.
 
 - [] Refactor the movement update loop: Clear and completely rebuild the visible grid from scratch on every move (leveraging the Map + deterministic logic) rather than shifting existing elements.

@@ -585,7 +585,18 @@ class TokenManager {
       }
     }
 
-    // Now spawn tokens for visible cells (flyweight checks occur in trySpawnCell)
+    // Cleanup: remove layers for tokens that are no longer visible to
+    // free memory, logical state kept in memento
+    for (const [k, v] of Array.from(this.tokensMap.entries())) {
+      if (!visibleKeys.has(k)) {
+        if (this.tokensLayer.hasLayer(v.layer)) {
+          this.tokensLayer.removeLayer(v.layer);
+        }
+        this.tokensMap.delete(k);
+      }
+    }
+
+    // Spawn tokens for visible cells (flyweight checks occur in trySpawnCell)
     for (let i = minI; i <= maxI; i++) {
       for (let j = minJ; j <= maxJ; j++) {
         this.trySpawnCell({ i, j });
