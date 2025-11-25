@@ -76,7 +76,7 @@ Key gameplay challenge: Can the map "remember" changes (collected items, deposit
 
 - [x] Update interaction logic: When a player collects or moves a token, save the new state of that specific cell into the global Map.
 
-- [] Implement the "Flyweight" check during rendering: Check the global Map first; if a cell exists there, use its data. If not, generate the cell deterministically.
+- [x] Implement a "Flyweight" check during rendering: Check the global Map first; if a cell exists there, use its data. If not, generate the cell deterministically.
 
 - [] Implement visual cleanup: Destroy Leaflet layers/DOM elements for cells that go off-screen to free up memory.
 

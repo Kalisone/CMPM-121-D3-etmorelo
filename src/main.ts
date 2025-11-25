@@ -577,6 +577,15 @@ class TokenManager {
     const minJ = Math.floor(Math.min(nwRelY, seRelY) / this.tileSize);
     const maxJ = Math.floor((Math.max(nwRelY, seRelY) - 1) / this.tileSize);
 
+    // Build a set of visible cell keys for this viewport.
+    const visibleKeys = new Set<string>();
+    for (let i = minI; i <= maxI; i++) {
+      for (let j = minJ; j <= maxJ; j++) {
+        visibleKeys.add(this.gridUtils.getKey({ i, j }));
+      }
+    }
+
+    // Now spawn tokens for visible cells (flyweight checks occur in trySpawnCell)
     for (let i = minI; i <= maxI; i++) {
       for (let j = minJ; j <= maxJ; j++) {
         this.trySpawnCell({ i, j });
@@ -596,17 +605,13 @@ class TokenManager {
       }
       return;
     }
-    // First consult the memento (extrinsic state). If an explicit
-    // cell state exists, it overrides deterministic generation.
+
     const memento = cellStateMemento.get(key);
     let exp = 0;
     if (memento) {
-      // If memento explicitly says no token, skip spawning.
       if (memento.hasToken === false) return;
-      // Otherwise use stored exp (default 0 if absent).
       exp = memento.exp ?? 0;
     } else {
-      // No memento entry: generate intrinsic state deterministically.
       const vRand = this.luckFn(key + ":value");
       for (let e = 0; e <= this.maxExp; e++) {
         if (vRand < this.expDistribution[e]) {
@@ -652,8 +657,6 @@ class TokenManager {
                 });
               }
               this.tokensMap.set(key, { layer: rect, exp });
-              // Persist the upgraded token state in the memento so the
-              // map remembers the new value for this cell.
               cellStateMemento.set(key, { hasToken: true, exp });
               this.gameState.clearHeldToken();
             } else {
@@ -680,7 +683,6 @@ class TokenManager {
         } else {
           this.tokensLayer.removeLayer(rect);
           this.tokensMap.delete(key);
-          // Persist removal in the memento so this cell stays empty.
           cellStateMemento.set(key, { hasToken: false });
           this.gameState.collectToken({ key, exp });
         }
@@ -819,6 +821,11 @@ function spawnTokens() {
  * `TokenManager` instance.
  */
 function trySpawnCell(cell: GridCell) {
+  // "flyweight" check: skip if memento says no token
+  const key = gridUtils.getKey(cell);
+  const m = cellStateMemento.get(key);
+  if (m && m.hasToken === false) return;
+
   tokenManager.trySpawnCell(cell);
 }
 
