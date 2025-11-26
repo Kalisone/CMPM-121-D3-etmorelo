@@ -24,11 +24,42 @@ class GameStateManager {
   public heldToken: Token | null = null;
   public collectedSet: Set<string> = new Set();
   public hasWon = false;
+  private readonly storageKey = "gameState";
 
   constructor(
     private readonly winValue: number,
     private onStateChange: () => void,
-  ) {}
+  ) {
+    this.loadFromLocalStorage();
+  }
+
+  private loadFromLocalStorage() {
+    try {
+      const saved = localStorage.getItem(this.storageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        this.heldToken = parsed.heldToken || null;
+        this.collectedSet = new Set(parsed.collectedSet || []);
+        this.hasWon = parsed.hasWon || false;
+      }
+    } catch (error) {
+      console.warn("Failed to load game state from localStorage:", error);
+    }
+  }
+
+  private saveToLocalStorage() {
+    try {
+      const data = {
+        heldToken: this.heldToken,
+        collectedSet: Array.from(this.collectedSet),
+        hasWon: this.hasWon,
+      };
+      localStorage.setItem(this.storageKey, JSON.stringify(data));
+    } catch (error) {
+      console.warn("Failed to save game state to localStorage:", error);
+    }
+  }
+
   isCollected(key: string): boolean {
     return this.collectedSet.has(key);
   }
@@ -36,12 +67,14 @@ class GameStateManager {
     this.heldToken = token;
     this.collectedSet.add(token.key);
     this.checkWinCondition();
+    this.saveToLocalStorage();
     this.onStateChange();
   }
   upgradeHeldToken() {
     if (this.heldToken) {
       this.heldToken.exp++;
       this.checkWinCondition();
+      this.saveToLocalStorage();
       this.onStateChange();
     }
   }
@@ -49,10 +82,16 @@ class GameStateManager {
     this.heldToken = null;
     this.collectedSet.clear();
     this.hasWon = false;
+    try {
+      localStorage.removeItem(this.storageKey);
+    } catch (error) {
+      console.warn("Failed to remove game state from localStorage:", error);
+    }
     this.onStateChange();
   }
   clearHeldToken() {
     this.heldToken = null;
+    this.saveToLocalStorage();
     this.onStateChange();
   }
   private checkWinCondition() {

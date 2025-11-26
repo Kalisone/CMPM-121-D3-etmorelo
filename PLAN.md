@@ -92,11 +92,11 @@ Key gameplay challenge: Can the player physically walk around to play the game, 
 
 - [x] Save the state of Memento to localStorage whenever it's modified.
 
-- [] Save player inventory to localStorage whenever it changes
+- [x] Save player inventory to localStorage whenever it changes.
 
-- [] Load game state (inventory, map history) from localStorage on gameInitialization
+- [x] Load game state (inventory, map history) from localStorage on game initialization (done with previous steps).
 
-- [] Add reset button that clears localStorage and reloads page (for testing)
+- [] Add reset button that clears localStorage and reloads page (for testing).
 
 - [] Implement new movement control system based on realworld GPS updates. Use Facade design pattern to hide this system behind an interface.
 
