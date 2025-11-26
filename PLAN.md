@@ -90,7 +90,7 @@ Key gameplay challenge: Can the player physically walk around to play the game, 
 
 #### D3.d Steps
 
-- [] Save the state of Memento to localStorage whenever it's modified.
+- [x] Save the state of Memento to localStorage whenever it's modified.
 
 - [] Save player inventory to localStorage whenever it changes
 

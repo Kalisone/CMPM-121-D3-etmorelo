@@ -574,6 +574,32 @@ const gridUtils = new GridUtils(
 class BoardState {
   // The "Memento"
   private state: Map<string, { hasToken?: boolean; exp?: number }> = new Map();
+  private readonly storageKey = "boardState";
+
+  constructor() {
+    this.loadFromLocalStorage();
+  }
+
+  private loadFromLocalStorage() {
+    try {
+      const saved = localStorage.getItem(this.storageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        this.state = new Map(Object.entries(parsed));
+      }
+    } catch (error) {
+      console.warn("Failed to load board state from localStorage:", error);
+    }
+  }
+
+  private saveToLocalStorage() {
+    try {
+      const obj = Object.fromEntries(this.state);
+      localStorage.setItem(this.storageKey, JSON.stringify(obj));
+    } catch (error) {
+      console.warn("Failed to save board state to localStorage:", error);
+    }
+  }
 
   get(key: string) {
     return this.state.get(key);
@@ -581,10 +607,16 @@ class BoardState {
 
   set(key: string, value: { hasToken?: boolean; exp?: number }) {
     this.state.set(key, value);
+    this.saveToLocalStorage();
   }
 
   reset() {
     this.state.clear();
+    try {
+      localStorage.removeItem(this.storageKey);
+    } catch (error) {
+      console.warn("Failed to remove board state from localStorage:", error);
+    }
   }
 }
 
