@@ -192,6 +192,178 @@ interface GridCell {
 }
 
 /**
+ * MovementController Interface
+ *
+ * Facade interface for different player movement strategies (manual buttons vs GPS).
+ */
+interface MovementController {
+  start(): void;
+  stop(): void;
+  isActive(): boolean;
+}
+
+/**
+ * ManualMovementController
+ *
+ * Handles player movement via directional buttons.
+ */
+class ManualMovementController implements MovementController {
+  private active = false;
+
+  constructor(
+    private onMove: (dx: number, dy: number) => void,
+  ) {}
+
+  start(): void {
+    this.active = true;
+  }
+
+  stop(): void {
+    this.active = false;
+  }
+
+  isActive(): boolean {
+    return this.active;
+  }
+
+  // Called by UI buttons
+  movePlayer(dx: number, dy: number): void {
+    if (this.active) {
+      this.onMove(dx, dy);
+    }
+  }
+}
+
+/**
+ * GPSMovementController
+ *
+ * Handles player movement based on real-world GPS location using the
+ * Geolocation API. Automatically updates player position as they move
+ * in the physical world.
+ */
+class GPSMovementController implements MovementController {
+  private active = false;
+  private watchId: number | null = null;
+  private lastKnownPosition: leaflet.LatLng | null = null;
+
+  constructor(
+    private onLocationUpdate: (lat: number, lng: number) => void,
+    private onError?: (error: GeolocationPositionError) => void,
+  ) {}
+
+  start(): void {
+    if (this.active) return;
+
+    this.active = true;
+
+    if (!navigator.geolocation) {
+      console.error("Geolocation is not supported by this browser");
+      if (this.onError) {
+        this.onError({
+          code: 0,
+          message: "Geolocation not supported",
+        } as GeolocationPositionError);
+      }
+      this.active = false;
+      return;
+    }
+
+    this.watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        this.lastKnownPosition = leaflet.latLng(lat, lng);
+        this.onLocationUpdate(lat, lng);
+      },
+      (error) => {
+        console.error("GPS error:", error);
+        if (this.onError) {
+          this.onError(error);
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 10000,
+        timeout: 5000,
+      },
+    );
+  }
+
+  stop(): void {
+    if (this.watchId !== null) {
+      navigator.geolocation.clearWatch(this.watchId);
+      this.watchId = null;
+    }
+    this.active = false;
+  }
+
+  isActive(): boolean {
+    return this.active;
+  }
+
+  getLastKnownPosition(): leaflet.LatLng | null {
+    return this.lastKnownPosition;
+  }
+}
+
+/**
+ * MovementFacade
+ *
+ * Facade that manages switching between manual and GPS movement controllers.
+ * Provides a unified interface for the game to interact with player movement
+ * regardless of the underlying control mechanism.
+ */
+class MovementFacade {
+  private currentController: MovementController;
+  private manualController: ManualMovementController;
+  private gpsController: GPSMovementController;
+  private useGPS = false;
+
+  constructor(
+    private onManualMove: (dx: number, dy: number) => void,
+    private onGPSUpdate: (lat: number, lng: number) => void,
+    private onGPSError?: (error: GeolocationPositionError) => void,
+  ) {
+    this.manualController = new ManualMovementController(onManualMove);
+    this.gpsController = new GPSMovementController(onGPSUpdate, onGPSError);
+    this.currentController = this.manualController;
+    this.manualController.start();
+  }
+
+  switchToManual(): void {
+    if (!this.useGPS) return;
+    this.gpsController.stop();
+    this.manualController.start();
+    this.currentController = this.manualController;
+    this.useGPS = false;
+  }
+
+  switchToGPS(): void {
+    if (this.useGPS) return;
+    this.manualController.stop();
+    this.gpsController.start();
+    this.currentController = this.gpsController;
+    this.useGPS = true;
+  }
+
+  isUsingGPS(): boolean {
+    return this.useGPS;
+  }
+
+  getCurrentController(): MovementController {
+    return this.currentController;
+  }
+
+  getManualController(): ManualMovementController {
+    return this.manualController;
+  }
+
+  stop(): void {
+    this.currentController.stop();
+  }
+}
+
+/**
  * GridUtils
  *
  * Provides conversions between world pixel coordinates and the
@@ -958,6 +1130,7 @@ const tokenManager = new TokenManager(
  */
 class Game {
   public freeLook: boolean = false;
+  private movementFacade: MovementFacade;
 
   constructor(
     private readonly mapManager: MapManager,
@@ -966,7 +1139,17 @@ class Game {
     private readonly uiManager: UIManager,
     private readonly boardState: BoardState,
     private tokenManager?: TokenManager,
-  ) {}
+  ) {
+    // Initialize movement facade
+    this.movementFacade = new MovementFacade(
+      // Manual movement handler
+      (dx: number, dy: number) => this.handlePlayerMove(dx, dy),
+      // GPS location update handler
+      (lat: number, lng: number) => this.handleGPSUpdate(lat, lng),
+      // GPS error handler
+      (error: GeolocationPositionError) => this.handleGPSError(error),
+    );
+  }
 
   handlePlayerMove(dx: number, dy: number) {
     const current = this.mapManager.playerMarker.getLatLng();
@@ -1115,6 +1298,53 @@ class Game {
     this.tokenManager?.clearAll();
     this.spawnTokens();
   }
+
+  handleGPSUpdate(lat: number, lng: number) {
+    const newLatLng = leaflet.latLng(lat, lng);
+    this.mapManager.playerMarker.setLatLng(newLatLng);
+    this.onStateChange();
+
+    if (!this.freeLook) {
+      this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
+    }
+
+    this.spawnTokens();
+  }
+
+  handleGPSError(error: GeolocationPositionError) {
+    let message = "GPS Error: ";
+    switch (error.code) {
+      case error.PERMISSION_DENIED:
+        message += "Location permission denied. Please enable location access.";
+        break;
+      case error.POSITION_UNAVAILABLE:
+        message += "Location information unavailable.";
+        break;
+      case error.TIMEOUT:
+        message += "Location request timed out.";
+        break;
+      default:
+        message += error.message;
+    }
+    console.error(message);
+    alert(message);
+  }
+
+  switchMovementMode(useGPS: boolean) {
+    if (useGPS) {
+      this.movementFacade.switchToGPS();
+    } else {
+      this.movementFacade.switchToManual();
+    }
+  }
+
+  isUsingGPS(): boolean {
+    return this.movementFacade.isUsingGPS();
+  }
+
+  getMovementFacade(): MovementFacade {
+    return this.movementFacade;
+  }
 }
 
 // Instantiate the Game object to start migrating global behaviors
@@ -1136,9 +1366,14 @@ game = new Game(
 uiManager.setReset(() =>
   (globalThis as unknown as { game?: Game }).game?.resetGame()
 );
-uiManager.setMoveHandler((dx, dy) =>
-  (globalThis as unknown as { game?: Game }).game?.handlePlayerMove(dx, dy)
-);
+uiManager.setMoveHandler((dx, dy) => {
+  const g = (globalThis as unknown as { game?: Game }).game;
+  if (g) {
+    // Use the manual controller through the facade
+    const manualController = g.getMovementFacade().getManualController();
+    manualController.movePlayer(dx, dy);
+  }
+});
 
 /**
  * Update inventory and win UI elements.

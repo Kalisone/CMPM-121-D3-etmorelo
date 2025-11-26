@@ -98,6 +98,6 @@ Key gameplay challenge: Can the player physically walk around to play the game, 
 
 - [x] Add reset button that clears localStorage and reloads page (for testing).
 
-- [] Implement new movement control system based on realworld GPS updates. Use Facade design pattern to hide this system behind an interface.
+- [x] Implement new movement control system based on realworld GPS updates. Use Facade design pattern to hide this system behind an interface.
 
 - [] Add a button that switches between GPS and button control systems.
