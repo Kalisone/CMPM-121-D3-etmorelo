@@ -14,7 +14,7 @@ This game will use Leaflet to render an interactive map centered to the location
 
 ## Assignments
 
-### D3.a: Core mechanics (token collection and crafting)
+### D3.a: Core mechanics
 
 Key technical challenge: Can you assemble a map-based user interface using the Leaflet mapping framework?
 
@@ -44,7 +44,7 @@ Key gameplay challenge: Can players collect and craft tokens from nearby locatio
 
 - [x] implemented win condition: player has token of value x
 
-### D3.b
+### D3.b Globe-spanning Gameplay
 
 Key technical challenge: Can you implement an interface with buttons to simulate local player movement?
 
@@ -62,7 +62,7 @@ Key gameplay challenge: Can players move around the map or scroll the map withou
 
 - [x] add a free look button to allow player to choose whether the camera follows the player or moves freely
 
-### D3.c
+### D3.c Object persistence
 
 Key technical challenge: Can you implement a memory-efficient storage strategy (Flyweight/Memento) that only saves modified cells while deterministically generating the rest?
 
@@ -81,3 +81,23 @@ Key gameplay challenge: Can the map "remember" changes (collected items, deposit
 - [x] Implement visual cleanup: Destroy Leaflet layers/DOM elements for cells that go off-screen to free up memory.
 
 - [x] Refactor the movement update loop: Clear and completely rebuild the visible grid from scratch on every move (leveraging the Map + deterministic logic) rather than shifting existing elements.
+
+### D3.d Gameplay Across Real-world Space and Time
+
+Key technical challenge: Can you hook up the player's real-world location via the Geolocation API and persist the game state across sessions?
+
+Key gameplay challenge: Can the player physically walk around to play the game, and can they close the browser tab and resume later without losing their items?
+
+#### D3.d Steps
+
+- [] Save the state of Memento to localStorage whenever it's modified.
+
+- [] Save player inventory to localStorage whenever it changes
+
+- [] Load game state (inventory, map history) from localStorage on gameInitialization
+
+- [] Add reset button that clears localStorage and reloads page (for testing)
+
+- [] Implement new movement control system based on realworld GPS updates. Use Facade design pattern to hide this system behind an interface.
+
+- [] Add a button that switches between GPS and button control systems.
