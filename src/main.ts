@@ -324,9 +324,8 @@ class UIManager {
     this.winBanner.id = "winBanner";
     this.winBanner.innerHTML = `
       <div>You win!</div>
-      <div style="margin-top:10px;"><button id="playAgain">Play again</button></div>
+      <div class="win-banner-actions"><button id="playAgain">Play again</button></div>
     `;
-    this.winBanner.style.display = "none";
     mapDiv.append(this.winBanner);
 
     // Play again button listener
@@ -336,6 +335,7 @@ class UIManager {
     });
 
     this.buildDirectionalControls();
+    this.buildResetButton(mapDiv);
   }
 
   private buildDirectionalControls() {
@@ -356,6 +356,7 @@ class UIManager {
     }
     buttons[4].innerHTML = PIN_SVG;
     buttons[4].setAttribute("aria-label", "Toggle free-look");
+    buttons[4].title = "View: Player Lock";
 
     for (let idx = 0; idx < buttons.length; idx++) {
       const button = buttons[idx];
@@ -364,12 +365,13 @@ class UIManager {
         button.addEventListener("click", () => {
           this.onMove(dir.dx, dir.dy);
         });
-      } else {
+      } else if (idx === 4) {
         button.addEventListener("click", () => {
           const newState = !this.currentFreeLook;
           this.currentFreeLook = newState;
           if (this.onToggle) this.onToggle(newState);
           button.innerHTML = newState ? EYE_SVG : PIN_SVG;
+          button.title = newState ? "View: Free Look" : "View: Player Lock";
         });
       }
     }
@@ -393,6 +395,27 @@ class UIManager {
     controlsContainer.appendChild(rowBottom);
 
     this.controlPanel.appendChild(controlsContainer);
+  }
+
+  buildResetButton(container: HTMLElement) {
+    // Create reset button in top-left corner
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.id = "resetButton";
+    resetButton.innerText = "🔄";
+    resetButton.setAttribute("aria-label", "Reset game");
+    resetButton.title = "Reset Game";
+    resetButton.addEventListener("click", () => {
+      if (
+        confirm(
+          "Reset game? This will clear all saved data and reload the page.",
+        )
+      ) {
+        localStorage.clear();
+        location.reload();
+      }
+    });
+    container.append(resetButton);
   }
 
   updateInventory(label: string) {

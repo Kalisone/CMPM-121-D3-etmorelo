@@ -96,7 +96,7 @@ Key gameplay challenge: Can the player physically walk around to play the game, 
 
 - [x] Load game state (inventory, map history) from localStorage on game initialization (done with previous steps).
 
-- [] Add reset button that clears localStorage and reloads page (for testing).
+- [x] Add reset button that clears localStorage and reloads page (for testing).
 
 - [] Implement new movement control system based on realworld GPS updates. Use Facade design pattern to hide this system behind an interface.
 
