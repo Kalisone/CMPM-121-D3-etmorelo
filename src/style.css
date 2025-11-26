@@ -68,7 +68,7 @@
 
 .directional-row {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -85,6 +85,11 @@
   background: #fff;
   font-size: 16px;
   cursor: pointer;
+}
+
+/* Invisible spacers occupy button space for alignment */
+#directionalControls .btn-spacer {
+  visibility: hidden;
 }
 
 #directionalControls button:hover {
@@ -119,4 +124,9 @@
 /* Win banner actions spacing */
 .win-banner-actions {
   margin-top: 10px;
+}
+
+/* Movement mode toggle button */
+#movementModeButton {
+  font-size: 18px;
 }

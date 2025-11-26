@@ -162,7 +162,7 @@ class MapManager {
     this.map.addLayer(layer);
   }
 
-  // Attach an event handler to the underlying Leaflet map.
+  // Generic event hookup passthrough (kept minimal to decouple callers from Leaflet API)
   on<E = unknown>(event: string, handler: (e: E) => void) {
     (this.map as unknown as { on: (evt: string, h: (e: E) => void) => void })
       .on(event, handler);
@@ -245,6 +245,11 @@ class GPSMovementController implements MovementController {
   private active = false;
   private watchId: number | null = null;
   private lastKnownPosition: leaflet.LatLng | null = null;
+  private lastAcceptedPosition: leaflet.LatLng | null = null;
+  private smoothedPosition: leaflet.LatLng | null = null;
+  private readonly maxAccuracyMeters = 30;
+  private readonly minMoveMeters = 8;
+  private readonly smoothingAlpha = 0.25;
 
   constructor(
     private onLocationUpdate: (lat: number, lng: number) => void,
@@ -270,10 +275,50 @@ class GPSMovementController implements MovementController {
 
     this.watchId = navigator.geolocation.watchPosition(
       (position) => {
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        this.lastKnownPosition = leaflet.latLng(lat, lng);
-        this.onLocationUpdate(lat, lng);
+        const { latitude, longitude, accuracy } = position.coords;
+
+        // Filter by reported accuracy (lower is better)
+        if (typeof accuracy === "number" && accuracy > this.maxAccuracyMeters) {
+          return;
+        }
+
+        // Smooth the signal with an exponential moving average
+        const raw = leaflet.latLng(latitude, longitude);
+        if (!this.smoothedPosition) {
+          this.smoothedPosition = raw;
+        } else {
+          const a = this.smoothingAlpha;
+          const lat = a * raw.lat + (1 - a) * this.smoothedPosition.lat;
+          const lng = a * raw.lng + (1 - a) * this.smoothedPosition.lng;
+          this.smoothedPosition = leaflet.latLng(lat, lng);
+        }
+
+        // Decide whether to emit an update based on minimum movement distance
+        if (!this.lastAcceptedPosition) {
+          this.lastAcceptedPosition = this.smoothedPosition.clone();
+          this.lastKnownPosition = this.smoothedPosition.clone();
+          this.onLocationUpdate(
+            this.smoothedPosition.lat,
+            this.smoothedPosition.lng,
+          );
+          return;
+        }
+
+        const moved = haversineMeters(
+          this.lastAcceptedPosition.lat,
+          this.lastAcceptedPosition.lng,
+          this.smoothedPosition.lat,
+          this.smoothedPosition.lng,
+        );
+
+        this.lastKnownPosition = this.smoothedPosition.clone();
+        if (moved >= this.minMoveMeters) {
+          this.lastAcceptedPosition = this.smoothedPosition.clone();
+          this.onLocationUpdate(
+            this.smoothedPosition.lat,
+            this.smoothedPosition.lng,
+          );
+        }
       },
       (error) => {
         console.error("GPS error:", error);
@@ -283,8 +328,8 @@ class GPSMovementController implements MovementController {
       },
       {
         enableHighAccuracy: true,
-        maximumAge: 10000,
-        timeout: 5000,
+        maximumAge: 0,
+        timeout: 15000,
       },
     );
   }
@@ -304,6 +349,23 @@ class GPSMovementController implements MovementController {
   getLastKnownPosition(): leaflet.LatLng | null {
     return this.lastKnownPosition;
   }
+}
+
+// Great-circle distance (Haversine) used for movement threshold filtering
+function haversineMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const R = 6371000; // Earth radius in meters
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 /**
@@ -446,25 +508,13 @@ class GridUtils {
   }
 }
 
-const EYE_SVG = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path>
-    <circle cx="12" cy="12" r="3"></circle>
-  </svg>
-`;
-
-const PIN_SVG = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <path d="M21 10c0 6-9 13-9 13S3 16 3 10a9 9 0 1118 0z"></path>
-    <circle cx="12" cy="10" r="2"></circle>
-  </svg>
-`;
+// (View icons now use glyphs: ⛯ and 👁)
 
 const DIRECTIONS = [
-  { label: "↑", dx: 0, dy: -1, aria: "Move up" },
-  { label: "←", dx: -1, dy: 0, aria: "Move left" },
-  { label: "→", dx: 1, dy: 0, aria: "Move right" },
-  { label: "↓", dx: 0, dy: 1, aria: "Move down" },
+  { label: "△", dx: 0, dy: -1, aria: "Move up" },
+  { label: "◁", dx: -1, dy: 0, aria: "Move left" },
+  { label: "▷", dx: 1, dy: 0, aria: "Move right" },
+  { label: "▽", dx: 0, dy: 1, aria: "Move down" },
 ];
 
 class UIManager {
@@ -473,6 +523,9 @@ class UIManager {
   private winBanner: HTMLElement;
   private currentFreeLook = false;
   private onToggle?: (enabled: boolean) => void;
+  private onMovementModeToggle?: (useGPS: boolean) => void;
+  private directionalButtons: HTMLButtonElement[] = [];
+  private movementModeButton?: HTMLButtonElement;
 
   constructor(
     private containerId: string,
@@ -516,19 +569,28 @@ class UIManager {
     controlsContainer.className = "directional-controls";
 
     const buttons: HTMLButtonElement[] = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       const b = document.createElement("button");
       b.type = "button";
       buttons.push(b);
     }
 
     // Assign labels and aria attributes
+    // Assign arrow labels from DIRECTIONS
     for (let i = 0; i < 4; i++) {
       buttons[i].innerText = DIRECTIONS[i].label;
-    }
-    buttons[4].innerHTML = PIN_SVG;
-    buttons[4].setAttribute("aria-label", "Toggle free-look");
-    buttons[4].title = "View: Player Lock";
+      this.directionalButtons.push(buttons[i]);
+    } // View toggle uses symbols ⛯ (player lock) and 👁 (free look)
+    buttons[4].innerText = "⛯";
+    buttons[4].setAttribute("aria-label", "Toggle view mode");
+    buttons[4].title = "View: Free Look";
+
+    // Movement mode toggle button (GPS/Manual)
+    buttons[5].innerText = "🌐";
+    buttons[5].setAttribute("aria-label", "Toggle movement mode");
+    buttons[5].title = "Movement: GPS";
+    buttons[5].id = "movementModeButton";
+    this.movementModeButton = buttons[5];
 
     for (let idx = 0; idx < buttons.length; idx++) {
       const button = buttons[idx];
@@ -542,15 +604,34 @@ class UIManager {
           const newState = !this.currentFreeLook;
           this.currentFreeLook = newState;
           if (this.onToggle) this.onToggle(newState);
-          button.innerHTML = newState ? EYE_SVG : PIN_SVG;
-          button.title = newState ? "View: Free Look" : "View: Player Lock";
+          button.innerText = newState ? "👁" : "⛯";
+          button.title = newState ? "View: Player Lock" : "View: Free Look";
+        });
+      } else if (idx === 5) {
+        button.addEventListener("click", () => {
+          if (this.onMovementModeToggle) {
+            // Toggle between GPS and manual
+            const currentlyGPS = button.innerText === "🌐";
+            this.onMovementModeToggle(!currentlyGPS);
+          }
         });
       }
     }
 
     const rowTop = document.createElement("div");
     rowTop.className = "directional-row row-top";
+    // Add invisible spacers to center the up arrow above the view button
+    const spacerL = document.createElement("button");
+    spacerL.type = "button";
+    spacerL.className = "btn-spacer";
+    spacerL.setAttribute("aria-hidden", "true");
+    const spacerR = document.createElement("button");
+    spacerR.type = "button";
+    spacerR.className = "btn-spacer";
+    spacerR.setAttribute("aria-hidden", "true");
+    rowTop.appendChild(spacerL);
     rowTop.appendChild(buttons[0]);
+    rowTop.appendChild(spacerR);
 
     const rowMiddle = document.createElement("div");
     rowMiddle.className = "directional-row row-middle";
@@ -560,6 +641,8 @@ class UIManager {
 
     const rowBottom = document.createElement("div");
     rowBottom.className = "directional-row row-bottom";
+    // Bottom row order: control scheme button to the left of down button
+    rowBottom.appendChild(buttons[5]);
     rowBottom.appendChild(buttons[3]);
 
     controlsContainer.appendChild(rowTop);
@@ -574,7 +657,7 @@ class UIManager {
     const resetButton = document.createElement("button");
     resetButton.type = "button";
     resetButton.id = "resetButton";
-    resetButton.innerText = "🔄";
+    resetButton.innerText = "↻";
     resetButton.setAttribute("aria-label", "Reset game");
     resetButton.title = "Reset Game";
     resetButton.addEventListener("click", () => {
@@ -613,6 +696,23 @@ class UIManager {
 
   setToggleHandler(onToggle: (enabled: boolean) => void) {
     this.onToggle = onToggle;
+  }
+
+  setMovementModeToggleHandler(onToggle: (useGPS: boolean) => void) {
+    this.onMovementModeToggle = onToggle;
+  }
+
+  updateMovementMode(useGPS: boolean) {
+    if (this.movementModeButton) {
+      this.movementModeButton.innerText = useGPS ? "🌐" : "✥";
+      this.movementModeButton.title = useGPS
+        ? "Movement: GPS"
+        : "Movement: Manual";
+    }
+    // Hide/show directional arrow buttons based on mode
+    this.directionalButtons.forEach((btn) => {
+      btn.style.display = useGPS ? "none" : "";
+    });
   }
 }
 
@@ -806,7 +906,7 @@ const gridUtils = new GridUtils(
 );
 
 class BoardState {
-  // The "Memento"
+  // The "Memento" map only stores modified cells (flyweight pattern). Keys: "i:j".
   private state: Map<string, { hasToken?: boolean; exp?: number }> = new Map();
   private readonly storageKey = "boardState";
 
@@ -815,6 +915,7 @@ class BoardState {
   }
 
   private loadFromLocalStorage() {
+    // Deserialize persisted board state (saved as plain object of key -> cell overrides)
     try {
       const saved = localStorage.getItem(this.storageKey);
       if (saved) {
@@ -827,6 +928,7 @@ class BoardState {
   }
 
   private saveToLocalStorage() {
+    // Serialize Map to object for JSON storage (avoids custom reviver)
     try {
       const obj = Object.fromEntries(this.state);
       localStorage.setItem(this.storageKey, JSON.stringify(obj));
@@ -885,6 +987,7 @@ class TokenManager {
     private readonly maxExp: number,
     private readonly proximityRadius: number,
   ) {
+    // Build inverse-power weighting for exponents (rarer high values)
     const _expWeights: number[] = [];
     for (let e = 0; e <= this.maxExp; e++) {
       _expWeights.push(1 / Math.pow(2, e));
@@ -912,6 +1015,10 @@ class TokenManager {
   // clearing everything. This removes off-screen token layers and
   // creates missing token layers for newly-visible cells.
   reconcileVisible() {
+    // Rebuild token presence for viewport without nuking all layers:
+    // 1. Compute visible grid index bounds from map pixel bounds
+    // 2. Remove off-screen token layers
+    // 3. Spawn tokens for newly visible cells only (state preserved elsewhere)
     const bounds = this.mapManager.getBounds();
     const nw = bounds.getNorthWest();
     const se = bounds.getSouthEast();
@@ -1178,7 +1285,7 @@ class Game {
       this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
     }
 
-    // Rebuild visible grid from scratch on every move (reconcile instead of clearing)
+    // Reconcile visible tokens for new viewport after movement
     this.spawnTokens();
   }
 
@@ -1362,7 +1469,7 @@ game = new Game(
 // `game` identifier itself.
 (globalThis as unknown as { game?: Game }).game = game;
 
-// Wire the UI reset and move handlers to the Game instance (guarded)
+// Wire reset & directional move handlers to Game instance
 uiManager.setReset(() =>
   (globalThis as unknown as { game?: Game }).game?.resetGame()
 );
@@ -1374,6 +1481,19 @@ uiManager.setMoveHandler((dx, dy) => {
     manualController.movePlayer(dx, dy);
   }
 });
+
+// Wire the movement mode toggle handler
+uiManager.setMovementModeToggleHandler((useGPS: boolean) => {
+  const g = (globalThis as unknown as { game?: Game }).game;
+  if (g) {
+    g.switchMovementMode(useGPS);
+    uiManager.updateMovementMode(useGPS);
+  }
+});
+
+// Default start in GPS mode (physical movement)
+game.switchMovementMode(true);
+uiManager.updateMovementMode(true);
 
 /**
  * Update inventory and win UI elements.
