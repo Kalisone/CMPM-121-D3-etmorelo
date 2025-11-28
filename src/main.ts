@@ -329,7 +329,7 @@ class GPSMovementController implements MovementController {
       {
         enableHighAccuracy: true,
         maximumAge: 0,
-        timeout: 15000,
+        timeout: 45000,
       },
     );
   }
@@ -507,8 +507,6 @@ class GridUtils {
     return bounds.getCenter();
   }
 }
-
-// (View icons now use glyphs: ⛯ and 👁)
 
 const DIRECTIONS = [
   { label: "△", dx: 0, dy: -1, aria: "Move up" },
@@ -737,7 +735,7 @@ const GameConfig = {
   PROXIMITY_DETECT_RADIUS: 6,
   SPAWN_ANIMATION_DURATION_MS: 900,
   TOKEN_SPAWN_PROBABILITY: 0.12,
-  TOKEN_MAX_EXP: 4,
+  TOKEN_MAX_EXP: 8,
 } as const;
 
 const CLASSROOM_LATLNG = leaflet.latLng(
