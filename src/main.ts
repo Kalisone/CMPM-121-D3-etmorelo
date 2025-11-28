@@ -13,6 +13,31 @@ interface Token {
 }
 
 /**
+ * Game Event Types for Observer Pattern
+ */
+type GameEventType =
+  | "stateChanged"
+  | "playerMoved"
+  | "tokenSpawned"
+  | "inventoryUpdated"
+  | "winConditionMet";
+
+interface GameEvent {
+  type: GameEventType;
+  data?: unknown;
+}
+
+type EventListener = (event: GameEvent) => void;
+
+/**
+ * EventEmitter - Observable pattern implementation
+ */
+interface EventEmitter {
+  subscribe(eventType: GameEventType, listener: EventListener): () => void;
+  emit(eventType: GameEventType, data?: unknown): void;
+}
+
+/**
  * GameStateManager
  *
  * Tracks the player's current held token, which grid cells have been
@@ -25,12 +50,21 @@ class GameStateManager {
   public collectedSet: Set<string> = new Set();
   public hasWon = false;
   private readonly storageKey = "gameState";
+  private eventEmitter: EventEmitter | null = null;
 
   constructor(
     private readonly winValue: number,
-    private onStateChange: () => void,
+    private onStateChange: () => void = () => {},
   ) {
     this.loadFromLocalStorage();
+  }
+
+  setOnStateChange(cb: () => void) {
+    this.onStateChange = cb;
+  }
+
+  setEventEmitter(emitter: EventEmitter) {
+    this.eventEmitter = emitter;
   }
 
   private loadFromLocalStorage() {
@@ -68,6 +102,7 @@ class GameStateManager {
     this.collectedSet.add(token.key);
     this.checkWinCondition();
     this.saveToLocalStorage();
+    this.eventEmitter?.emit("inventoryUpdated", { token });
     this.onStateChange();
   }
   upgradeHeldToken() {
@@ -75,6 +110,7 @@ class GameStateManager {
       this.heldToken.exp++;
       this.checkWinCondition();
       this.saveToLocalStorage();
+      this.eventEmitter?.emit("inventoryUpdated", { token: this.heldToken });
       this.onStateChange();
     }
   }
@@ -92,11 +128,13 @@ class GameStateManager {
   clearHeldToken() {
     this.heldToken = null;
     this.saveToLocalStorage();
+    this.eventEmitter?.emit("inventoryUpdated", { token: null });
     this.onStateChange();
   }
   private checkWinCondition() {
     if (this.heldToken && (2 ** this.heldToken.exp) === this.winValue) {
       this.hasWon = true;
+      this.eventEmitter?.emit("winConditionMet", { token: this.heldToken });
     }
   }
 }
@@ -573,15 +611,14 @@ class UIManager {
       buttons.push(b);
     }
 
-    // Assign labels and aria attributes
-    // Assign arrow labels from DIRECTIONS
+    // View mode toggle button (Player Lock/Free Look)
     for (let i = 0; i < 4; i++) {
       buttons[i].innerText = DIRECTIONS[i].label;
       this.directionalButtons.push(buttons[i]);
-    } // View toggle uses symbols ⛯ (player lock) and 👁 (free look)
+    }
     buttons[4].innerText = "⛯";
     buttons[4].setAttribute("aria-label", "Toggle view mode");
-    buttons[4].title = "View: Free Look";
+    buttons[4].title = "View: Player Lock";
 
     // Movement mode toggle button (GPS/Manual)
     buttons[5].innerText = "🌐";
@@ -603,7 +640,7 @@ class UIManager {
           this.currentFreeLook = newState;
           if (this.onToggle) this.onToggle(newState);
           button.innerText = newState ? "👁" : "⛯";
-          button.title = newState ? "View: Player Lock" : "View: Free Look";
+          button.title = newState ? "View: Free Look" : "View: Player Lock";
         });
       } else if (idx === 5) {
         button.addEventListener("click", () => {
@@ -722,9 +759,6 @@ const uiManager = new UIManager(
   () => {},
 );
 
-// Wire the UI toggle to the free-look setter so clicks enable/disable dragging.
-uiManager.setToggleHandler((enabled: boolean) => setFreeLook(enabled));
-
 // Our classroom location
 // Centralized game tuning/configuration
 const GameConfig = {
@@ -759,25 +793,6 @@ const mapManager = new MapManager(
 );
 const playerMarker = mapManager.playerMarker;
 
-updateUI();
-
-playerMarker.on("mouseover", () => {
-  updateUI();
-  playerMarker.openTooltip();
-});
-
-playerMarker.on("mouseout", () => {
-  playerMarker.closeTooltip();
-});
-
-// On click, update and show the tooltip (do not pin it)
-playerMarker.on("click", () => {
-  updateUI();
-  playerMarker.openTooltip();
-});
-
-updateUI();
-
 /*
  * BUTTONS
  *
@@ -793,94 +808,12 @@ updateUI();
  * dragging is disabled. When `enabled` is true dragging is enabled so the
  * user can pan independently of the player's marker.
  */
-function setFreeLook(enabled: boolean) {
-  // Prefer Game method when available (new OO entrypoint).
-  const _g1 = (globalThis as unknown as { game?: Game }).game;
-  if (_g1) {
-    _g1.setFreeLook(enabled);
-    return;
-  }
-
-  freeLook = enabled;
-
-  if (!enabled) {
-    mapManager.disableDragging();
-
-    mapManager.setView(
-      playerMarker.getLatLng(),
-      GameConfig.GAMEPLAY_ZOOM_LEVEL,
-    );
-    // If the token manager is available, rebuild the visible grid so the
-    // camera-lock (programmatic follow) view matches the player's new
-    // position. Use `typeof` check to avoid referencing the const before
-    // it's initialized during startup.
-    try {
-      if (typeof tokenManager !== "undefined" && tokenManager) {
-        tokenManager.reconcileVisible();
-        spawnTokens();
-      }
-    } catch {
-      // tokenManager not yet initialized; ignore
-    }
-  } else {
-    mapManager.enableDragging();
-  }
-}
-
-let freeLook = false;
-
-/**
- * Move the player by a grid delta (dx, dy).
- *
- * Preserves the player's intra-cell offset (so movement is in world pixel
- * space aligned to the grid anchor), updates the tooltip/UI, and spawns
- * tokens for newly-visible cells.
- */
-
-/**
- * Update the player's tooltip to display the current grid cell key.
- *
- * Converts the marker's lat/lng to a grid cell using `gridUtils` and
- * updates or binds the tooltip accordingly.
- */
-function updatePlayerTooltip() {
-  // Delegate to Game when available.
-  const _g2 = (globalThis as unknown as { game?: Game }).game;
-  if (_g2) {
-    try {
-      _g2.updatePlayerTooltip();
-    } catch (error) {
-      console.log("Error updating player tooltip via game", error);
-    }
-    return;
-  }
-
-  try {
-    const latlng = playerMarker.getLatLng();
-    const cell = gridUtils!.latLngToCell(latlng);
-    const content = `Player ${gridUtils!.getKey(cell)}`;
-    const t = playerMarker.getTooltip();
-    if (t) {
-      t.setContent(content);
-    } else {
-      playerMarker.bindTooltip(content, {
-        permanent: false,
-        direction: "top",
-        className: "player-label",
-      });
-    }
-  } catch (error) {
-    console.log("Error updating player tooltip", error);
-  }
-}
-
 /**
  * Create the directional control UI container.
  *
  * Returns a DOM element containing directional buttons and a center
  * toggle. Buttons are wired to call `movePlayerBy` and `setFreeLook`.
  */
-setFreeLook(freeLook);
 
 /*
  * TOKEN SPAWNING
@@ -959,12 +892,9 @@ const boardState = new BoardState();
 // Token spawning parameters are in `GameConfig`.
 const WIN_VALUE = Math.pow(2, GameConfig.TOKEN_MAX_EXP);
 
-const gameState = new GameStateManager(WIN_VALUE, updateUI);
+const gameState = new GameStateManager(WIN_VALUE);
 
-// Declare `game` early as undefined so other startup helpers can safely
-// check for its presence without triggering the temporal dead zone.
-// deno-lint-ignore prefer-const
-let game: Game | undefined;
+// (game instance will be created later via the Game constructor)
 
 // TokenManager encapsulates token layer and spawn logic
 class TokenManager {
@@ -1233,9 +1163,10 @@ const tokenManager = new TokenManager(
  * wraps existing global functions so the codebase can migrate towards
  * an object-oriented structure without changing program flow.
  */
-class Game {
+class Game implements EventEmitter {
   public freeLook: boolean = false;
   private movementFacade: MovementFacade;
+  private listeners: Map<GameEventType, Set<EventListener>> = new Map();
 
   constructor(
     private readonly mapManager: MapManager,
@@ -1245,6 +1176,9 @@ class Game {
     private readonly boardState: BoardState,
     private tokenManager?: TokenManager,
   ) {
+    // Store token manager reference
+    this.tokenManager = tokenManager;
+
     // Initialize movement facade
     this.movementFacade = new MovementFacade(
       // Manual movement handler
@@ -1254,6 +1188,104 @@ class Game {
       // GPS error handler
       (error: GeolocationPositionError) => this.handleGPSError(error),
     );
+
+    // Let gameState notify this Game when state changes
+    this.gameState.setOnStateChange(() => this.onStateChange());
+    // Connect GameStateManager to event system
+    this.gameState.setEventEmitter(this);
+
+    // Wire UI handlers to this Game
+    this.uiManager.setReset(() => this.resetGame());
+    this.uiManager.setMoveHandler((dx: number, dy: number) => {
+      const manual = this.getMovementFacade().getManualController();
+      manual.movePlayer(dx, dy);
+    });
+    this.uiManager.setMovementModeToggleHandler((useGPS: boolean) => {
+      this.switchMovementMode(useGPS);
+      this.uiManager.updateMovementMode(useGPS);
+    });
+    this.uiManager.setToggleHandler((enabled: boolean) =>
+      this.setFreeLook(enabled)
+    );
+
+    // Wire player marker events
+    const pm = this.mapManager.playerMarker;
+    pm.on("mouseover", () => {
+      this.onStateChange();
+      pm.openTooltip();
+    });
+    pm.on("mouseout", () => pm.closeTooltip());
+    pm.on("click", () => {
+      this.onStateChange();
+      pm.openTooltip();
+    });
+
+    // Map events
+    this.mapManager.on("moveend", () => {
+      if (this.freeLook) {
+        this.tokenManager?.reconcileVisible();
+        this.spawnTokens();
+      }
+    });
+    this.mapManager.on("zoomend", () => this.spawnTokens());
+    this.mapManager.on("resize", () => this.spawnTokens());
+
+    // Initial render / state sync
+    this.onStateChange();
+    this.spawnTokens();
+
+    // Default start in GPS mode
+    this.switchMovementMode(true);
+    this.uiManager.updateMovementMode(true);
+
+    // Subscribe UI updates to game events (Observer pattern)
+    this.subscribe("stateChanged", () => {
+      this.updateStatusPanel();
+      this.updatePlayerTooltip();
+    });
+
+    this.subscribe("playerMoved", () => {
+      this.updatePlayerTooltip();
+    });
+
+    this.subscribe("inventoryUpdated", () => {
+      this.updateStatusPanel();
+    });
+
+    this.subscribe("winConditionMet", () => {
+      this.updateStatusPanel();
+    });
+
+    this.setFreeLook(false);
+  }
+
+  /**
+   * Subscribe to game events (Observer pattern)
+   */
+  subscribe(eventType: GameEventType, listener: EventListener): () => void {
+    if (!this.listeners.has(eventType)) {
+      this.listeners.set(eventType, new Set());
+    }
+    this.listeners.get(eventType)!.add(listener);
+
+    // Return unsubscribe function
+    return () => {
+      this.listeners.get(eventType)?.delete(listener);
+    };
+  }
+
+  /**
+   * Emit game events to subscribers (Observer pattern)
+   */
+  emit(eventType: GameEventType, data?: unknown): void {
+    const event: GameEvent = { type: eventType, data };
+    this.listeners.get(eventType)?.forEach((listener) => {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error(`Error in event listener for ${eventType}:`, error);
+      }
+    });
   }
 
   handlePlayerMove(dx: number, dy: number) {
@@ -1277,7 +1309,7 @@ class Game {
     );
 
     this.mapManager.playerMarker.setLatLng(newLatLng);
-    this.onStateChange();
+    this.emit("playerMoved", { latLng: newLatLng });
 
     if (!this.freeLook) {
       this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
@@ -1292,12 +1324,8 @@ class Game {
   }
 
   onStateChange() {
-    try {
-      this.updateStatusPanel();
-      this.updatePlayerTooltip();
-    } catch (error) {
-      console.log("Error updating UI", error);
-    }
+    // Emit event instead of directly calling UI updates
+    this.emit("stateChanged");
   }
 
   updateStatusPanel() {
@@ -1407,7 +1435,7 @@ class Game {
   handleGPSUpdate(lat: number, lng: number) {
     const newLatLng = leaflet.latLng(lat, lng);
     this.mapManager.playerMarker.setLatLng(newLatLng);
-    this.onStateChange();
+    this.emit("playerMoved", { latLng: newLatLng });
 
     if (!this.freeLook) {
       this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
@@ -1452,8 +1480,9 @@ class Game {
   }
 }
 
-// Instantiate the Game object to start migrating global behaviors
-game = new Game(
+// Instantiate the Game object and let it perform initial wiring/render.
+// Prefixed with _ because it's used for side effects (event wiring) only
+const _game = new Game(
   mapManager,
   gridUtils,
   gameState,
@@ -1462,200 +1491,13 @@ game = new Game(
   tokenManager,
 );
 
-// Make the `game` instance available on `globalThis` so startup helpers
-// can check for presence without causing TDZ errors by referencing the
-// `game` identifier itself.
-(globalThis as unknown as { game?: Game }).game = game;
-
-// Wire reset & directional move handlers to Game instance
-uiManager.setReset(() =>
-  (globalThis as unknown as { game?: Game }).game?.resetGame()
-);
-uiManager.setMoveHandler((dx, dy) => {
-  const g = (globalThis as unknown as { game?: Game }).game;
-  if (g) {
-    // Use the manual controller through the facade
-    const manualController = g.getMovementFacade().getManualController();
-    manualController.movePlayer(dx, dy);
-  }
-});
-
-// Wire the movement mode toggle handler
-uiManager.setMovementModeToggleHandler((useGPS: boolean) => {
-  const g = (globalThis as unknown as { game?: Game }).game;
-  if (g) {
-    g.switchMovementMode(useGPS);
-    uiManager.updateMovementMode(useGPS);
-  }
-});
-
-// Default start in GPS mode (physical movement)
-game.switchMovementMode(true);
-uiManager.updateMovementMode(true);
-
 /**
  * Update inventory and win UI elements.
  *
  * Reads `gameState` to set the on-map inventory badge and to toggle the
  * win banner when the player has obtained the winning token value.
  */
-function updateStatusPanel() {
-  // Prefer Game's status panel when available
-  const _g3 = (globalThis as unknown as { game?: Game }).game;
-  if (_g3) {
-    try {
-      _g3.updateStatusPanel();
-    } catch (error) {
-      console.log("Error updating status via game", error);
-    }
-    return;
-  }
-
-  const holding = gameState.heldToken
-    ? `Holding: ${2 ** gameState.heldToken.exp}`
-    : "Holding: none";
-  // Update the on-map inventory badge and win banner via UI manager
-  uiManager.updateInventory(holding);
-  uiManager.toggleWinState(gameState.hasWon);
-}
-updateUI();
-
-/**
- * Refresh UI elements tied to game state and player position.
- *
- * Calls `updateStatusPanel` and `updatePlayerTooltip` inside a try/catch
- * to avoid UI updates breaking gameplay flow.
- */
-function updateUI() {
-  try {
-    // Game has its own UI update orchestration; prefer it when present.
-    const _g4 = (globalThis as unknown as { game?: Game }).game;
-    if (_g4) {
-      _g4.onStateChange();
-    } else {
-      updateStatusPanel();
-      updatePlayerTooltip();
-    }
-  } catch (error) {
-    console.log("Error updating UI", error);
-  }
-}
-
-/**
- * Show a temporary popup at `latlng` with the provided content and auto-
- * close it after `duration` milliseconds. Used for testing.
- */
-function _openTempPopup(
-  latlng: LatLng,
-  content: string,
-  duration = GameConfig.SPAWN_ANIMATION_DURATION_MS,
-) {
-  // Prefer Game method if present
-  const _g5 = (globalThis as unknown as { game?: Game }).game;
-  if (_g5) {
-    _g5.openTempPopup(latlng, content, duration);
-    return;
-  }
-
-  const popup = leaflet.popup({ closeButton: false, autoClose: true })
-    .setLatLng(latlng)
-    .setContent(content);
-  mapManager.openPopup(popup);
-  setTimeout(() => mapManager.closePopup(popup), duration);
-}
-
-/**
- * Spawn tokens for all grid cells that intersect the visible map bounds.
- *
- * Converts the map bounds to world pixel coordinates relative to the
- * `WORLD_ORIGIN_POINT` and iterates the covered grid cells, delegating
- * to `trySpawnCell` for each cell.
- */
-function spawnTokens() {
-  // Delegate to Game when available; otherwise use the existing logic.
-  const _g6 = (globalThis as unknown as { game?: Game }).game;
-  if (_g6) {
-    _g6.spawnTokens();
-    return;
-  }
-
-  const bounds = mapManager.getBounds();
-
-  const nw = bounds.getNorthWest();
-  const se = bounds.getSouthEast();
-
-  const nwPt = mapManager.project(nw, GameConfig.GAMEPLAY_ZOOM_LEVEL);
-  const sePt = mapManager.project(se, GameConfig.GAMEPLAY_ZOOM_LEVEL);
-
-  const nwRelX = nwPt.x - WORLD_ORIGIN_POINT.x;
-  const seRelX = sePt.x - WORLD_ORIGIN_POINT.x;
-  const nwRelY = nwPt.y - WORLD_ORIGIN_POINT.y;
-  const seRelY = sePt.y - WORLD_ORIGIN_POINT.y;
-
-  const minI = Math.floor(Math.min(nwRelX, seRelX) / GameConfig.TILE_SIZE_PX);
-  const maxI = Math.floor(
-    (Math.max(nwRelX, seRelX) - 1) / GameConfig.TILE_SIZE_PX,
-  );
-  const minJ = Math.floor(Math.min(nwRelY, seRelY) / GameConfig.TILE_SIZE_PX);
-  const maxJ = Math.floor(
-    (Math.max(nwRelY, seRelY) - 1) / GameConfig.TILE_SIZE_PX,
-  );
-
-  for (let i = minI; i <= maxI; i++) {
-    for (let j = minJ; j <= maxJ; j++) {
-      trySpawnCell({ i, j });
-    }
-  }
-}
-
-/**
- * Compatibility wrapper to delegate a single cell spawn attempt to the
- * `TokenManager` instance.
- */
-function trySpawnCell(cell: GridCell) {
-  // "flyweight" check: skip if memento says no token
-  const key = gridUtils.getKey(cell);
-  const m = boardState.get(key);
-  if (m && m.hasToken === false) return;
-
-  const _g7 = (globalThis as unknown as { game?: Game }).game;
-  if (_g7) {
-    // Prefer Game delegation when available
-    try {
-      _g7.trySpawnCell(cell);
-    } catch {
-      tokenManager.trySpawnCell(cell);
-    }
-    return;
-  }
-
-  tokenManager.trySpawnCell(cell);
-}
-
-// When the map finishes moving due to user dragging (free-look), rebuild
-// the visible grid from scratch. For programmatic moves (camera follow)
-// `movePlayerBy` already clears and spawns, so skip extra work.
-mapManager.on("moveend", () => {
-  // Prefer Game-managed behavior when available
-  const _g8 = (globalThis as unknown as { game?: Game }).game;
-  if (_g8) {
-    if (_g8.freeLook) {
-      tokenManager.reconcileVisible();
-      _g8.spawnTokens();
-    }
-    return;
-  }
-
-  if (freeLook) {
-    tokenManager.reconcileVisible();
-    spawnTokens();
-  }
-});
-
-mapManager.on("zoomend", () => spawnTokens());
-mapManager.on("resize", () => spawnTokens());
-
-spawnTokens();
+// Game will wire map movement, zoom and resize handlers and manage token spawning.
 
 /*
  * GRID OVERLAY
