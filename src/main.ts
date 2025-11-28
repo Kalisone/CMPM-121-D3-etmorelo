@@ -152,7 +152,6 @@ class GameStateManager {
 class MapManager {
   public map: leaflet.Map;
   public playerMarker: leaflet.Marker;
-  // Grid-related parameters
   private gridOrigin?: leaflet.Point;
   private gridZoom?: number;
   private gridTileSize?: number;
@@ -349,7 +348,6 @@ class ManualMovementController implements MovementController {
     return this.active;
   }
 
-  // Called by UI buttons
   movePlayer(dx: number, dy: number): void {
     if (this.active) {
       this.onMove(dx, dy);
@@ -416,7 +414,6 @@ class GPSMovementController implements MovementController {
           this.smoothedPosition = leaflet.latLng(lat, lng);
         }
 
-        // Decide whether to emit an update based on minimum movement distance
         if (!this.lastAcceptedPosition) {
           this.lastAcceptedPosition = this.smoothedPosition.clone();
           this.lastKnownPosition = this.smoothedPosition.clone();
@@ -600,7 +597,6 @@ class UIManager {
     `;
     mapDiv.append(this.winBanner);
 
-    // Play again button listener
     this.winBanner.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
       if (target && target.id === "playAgain") this.onReset();
@@ -622,7 +618,6 @@ class UIManager {
       buttons.push(b);
     }
 
-    // View mode toggle button (Player Lock/Free Look)
     for (let i = 0; i < 4; i++) {
       buttons[i].innerText = DIRECTIONS[i].label;
       this.directionalButtons.push(buttons[i]);
@@ -631,7 +626,6 @@ class UIManager {
     buttons[4].setAttribute("aria-label", "Toggle view mode");
     buttons[4].title = "View: Player Lock";
 
-    // Movement mode toggle button (GPS/Manual)
     buttons[5].innerText = "🌐";
     buttons[5].setAttribute("aria-label", "Toggle movement mode");
     buttons[5].title = "Movement: GPS";
@@ -656,7 +650,6 @@ class UIManager {
       } else if (idx === 5) {
         button.addEventListener("click", () => {
           if (this.onMovementModeToggle) {
-            // Toggle between GPS and manual
             const currentlyGPS = button.innerText === "🌐";
             this.onMovementModeToggle(!currentlyGPS);
           }
@@ -666,7 +659,6 @@ class UIManager {
 
     const rowTop = document.createElement("div");
     rowTop.className = "directional-row row-top";
-    // Add invisible spacers to center the up arrow above the view button
     const spacerL = document.createElement("button");
     spacerL.type = "button";
     spacerL.className = "btn-spacer";
@@ -687,7 +679,6 @@ class UIManager {
 
     const rowBottom = document.createElement("div");
     rowBottom.className = "directional-row row-bottom";
-    // Bottom row order: control scheme button to the left of down button
     rowBottom.appendChild(buttons[5]);
     rowBottom.appendChild(buttons[3]);
 
@@ -699,7 +690,6 @@ class UIManager {
   }
 
   buildResetButton(container: HTMLElement) {
-    // Create reset button in top-left corner
     const resetButton = document.createElement("button");
     resetButton.type = "button";
     resetButton.id = "resetButton";
@@ -732,7 +722,6 @@ class UIManager {
   }
 
   setReset(onReset: () => void) {
-    // Replace reset handler used by the play-again button
     this.onReset = onReset;
   }
 
@@ -755,23 +744,18 @@ class UIManager {
         ? "Movement: GPS"
         : "Movement: Manual";
     }
-    // Hide/show directional arrow buttons based on mode
     this.directionalButtons.forEach((btn) => {
       btn.style.display = useGPS ? "none" : "";
     });
   }
 }
 
-// Instantiate UI manager (map element needs to exist before MapManager)
-// Use no-op handlers here and wire real handlers after `game` exists.
 const uiManager = new UIManager(
   "map",
   (_dx, _dy) => {},
   () => {},
 );
 
-// Our classroom location
-// Centralized game tuning/configuration
 const GameConfig = {
   CLASSROOM_LAT: 36.997936938057016,
   CLASSROOM_LNG: -122.05703507501151,
@@ -824,7 +808,6 @@ mapManager.setGridParams(
 );
 
 class BoardState {
-  // The "Memento" map only stores modified cells (flyweight pattern). Keys: "i:j".
   private state: Map<string, { hasToken?: boolean; exp?: number }> = new Map();
   private readonly storageKey = "boardState";
 
@@ -845,7 +828,6 @@ class BoardState {
   }
 
   private saveToLocalStorage() {
-    // Serialize Map to object for JSON storage (avoids custom reviver)
     try {
       const obj = Object.fromEntries(this.state);
       localStorage.setItem(this.storageKey, JSON.stringify(obj));
@@ -879,7 +861,6 @@ const WIN_VALUE = Math.pow(2, GameConfig.TOKEN_MAX_EXP);
 
 const gameState = new GameStateManager(WIN_VALUE);
 
-// TokenManager encapsulates token layer and spawn logic
 class TokenManager {
   public tokensLayer: leaflet.LayerGroup;
   public tokensMap: Map<string, { layer: leaflet.Layer; exp: number }>;
@@ -1150,23 +1131,17 @@ class Game implements EventEmitter {
     private readonly boardState: BoardState,
     private tokenManager?: TokenManager,
   ) {
-    // Store token manager reference
     this.tokenManager = tokenManager;
 
-    // Initialize movement facade
     this.movementFacade = new MovementFacade(
-      // Manual movement handler
       (dx: number, dy: number) => this.handlePlayerMove(dx, dy),
-      // GPS location update handler
       (lat: number, lng: number) => this.handleGPSUpdate(lat, lng),
-      // GPS error handler
       (error: GeolocationPositionError) => this.handleGPSError(error),
     );
 
     this.gameState.setOnStateChange(() => this.onStateChange());
     this.gameState.setEventEmitter(this);
 
-    // Wire UI handlers to this Game
     this.uiManager.setReset(() => this.resetGame());
     this.uiManager.setMoveHandler((dx: number, dy: number) => {
       const manual = this.getMovementFacade().getManualController();
@@ -1180,7 +1155,6 @@ class Game implements EventEmitter {
       this.setFreeLook(enabled)
     );
 
-    // Wire player marker events
     const pm = this.mapManager.playerMarker;
     pm.on("mouseover", () => {
       this.onStateChange();
@@ -1192,7 +1166,6 @@ class Game implements EventEmitter {
       pm.openTooltip();
     });
 
-    // Map events
     this.mapManager.on("moveend", () => {
       if (this.freeLook) {
         this.tokenManager?.reconcileVisible();
@@ -1202,15 +1175,12 @@ class Game implements EventEmitter {
     this.mapManager.on("zoomend", () => this.spawnTokens());
     this.mapManager.on("resize", () => this.spawnTokens());
 
-    // Initial render / state sync
     this.onStateChange();
     this.spawnTokens();
 
-    // Default start in GPS mode
     this.switchMovementMode(true);
     this.uiManager.updateMovementMode(true);
 
-    // Subscribe UI updates to game events (Observer pattern)
     this.subscribe("stateChanged", () => {
       this.updateStatusPanel();
       this.updatePlayerTooltip();
@@ -1240,7 +1210,6 @@ class Game implements EventEmitter {
     }
     this.listeners.get(eventType)!.add(listener);
 
-    // Return unsubscribe function
     return () => {
       this.listeners.get(eventType)?.delete(listener);
     };
@@ -1287,7 +1256,6 @@ class Game implements EventEmitter {
       this.mapManager.setView(newLatLng, GameConfig.GAMEPLAY_ZOOM_LEVEL);
     }
 
-    // Reconcile visible tokens for new viewport after movement
     this.spawnTokens();
   }
 
@@ -1296,7 +1264,6 @@ class Game implements EventEmitter {
   }
 
   onStateChange() {
-    // Emit event instead of directly calling UI updates
     this.emit("stateChanged");
   }
 
@@ -1390,7 +1357,7 @@ class Game implements EventEmitter {
           this.spawnTokens();
         }
       } catch {
-        // ignore
+        // Suppress errors during token spawning
       }
     } else {
       this.mapManager.enableDragging();
@@ -1452,7 +1419,6 @@ class Game implements EventEmitter {
   }
 }
 
-// Instantiate the Game object
 const _game = new Game(
   mapManager,
   gameState,
