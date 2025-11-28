@@ -1,5 +1,10 @@
 // @deno-types="npm:@types/leaflet"
-import type { LatLng, LeafletMouseEvent } from "leaflet";
+import type {
+  Coords,
+  GridLayerOptions,
+  LatLng,
+  LeafletMouseEvent,
+} from "leaflet";
 import leaflet from "leaflet";
 
 import "leaflet/dist/leaflet.css";
@@ -142,13 +147,16 @@ class GameStateManager {
 /**
  * MapManager
  *
- * Lightweight wrapper around a Leaflet map instance that centralizes
- * common map operations used throughout the app (marker, view, layer
- * management and event hookup).
+ * Wrapper around a Leaflet map instance that centralizes map operations
  */
 class MapManager {
   public map: leaflet.Map;
   public playerMarker: leaflet.Marker;
+  // Grid-related parameters
+  private gridOrigin?: leaflet.Point;
+  private gridZoom?: number;
+  private gridTileSize?: number;
+  private getPlayerLatLng?: () => LatLng;
 
   constructor(elementId: string, center: leaflet.LatLng, zoom: number) {
     this.map = leaflet.map(document.getElementById(elementId)!, {
@@ -163,13 +171,10 @@ class MapManager {
       scrollWheelZoom: false,
     });
 
-    // Background
     leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: "&copy; OpenStreetMap",
     }).addTo(this.map);
-
-    // Player
     this.playerMarker = leaflet.marker(center).addTo(this.map);
     this.initPlayerTooltip();
   }
@@ -179,6 +184,18 @@ class MapManager {
       direction: "top",
       className: "player-label",
     });
+  }
+
+  setGridParams(
+    origin: leaflet.Point,
+    zoom: number,
+    tileSize: number,
+    getPlayerLatLng: () => LatLng,
+  ) {
+    this.gridOrigin = origin;
+    this.gridZoom = zoom;
+    this.gridTileSize = tileSize;
+    this.getPlayerLatLng = getPlayerLatLng;
   }
   movePlayer(latLng: leaflet.LatLng) {
     this.playerMarker.setLatLng(latLng);
@@ -200,13 +217,11 @@ class MapManager {
     this.map.addLayer(layer);
   }
 
-  // Generic event hookup passthrough (kept minimal to decouple callers from Leaflet API)
   on<E = unknown>(event: string, handler: (e: E) => void) {
     (this.map as unknown as { on: (evt: string, h: (e: E) => void) => void })
       .on(event, handler);
   }
 
-  // Open a popup on the map.
   openPopup(popup: leaflet.Popup) {
     popup.openOn(this.map);
   }
@@ -221,6 +236,76 @@ class MapManager {
   }
   disableDragging() {
     this.map.dragging.disable();
+  }
+
+  getKey(cell: GridCell): string {
+    return `${cell.i}:${cell.j}`;
+  }
+
+  parseKey(key: string): GridCell {
+    const [iStr, jStr] = key.split(":");
+    return { i: Number(iStr), j: Number(jStr) };
+  }
+
+  latLngToCell(latlng: LatLng): GridCell {
+    if (
+      !this.gridOrigin || this.gridZoom === undefined ||
+      this.gridTileSize === undefined
+    ) {
+      throw new Error("Grid parameters not set on MapManager");
+    }
+    const pt = this.map.project(latlng, this.gridZoom);
+    const relX = pt.x - this.gridOrigin.x;
+    const relY = pt.y - this.gridOrigin.y;
+    const i = Math.floor(relX / this.gridTileSize);
+    const j = Math.floor(relY / this.gridTileSize);
+    return { i, j };
+  }
+
+  cellToLatLngBounds(cell: GridCell): leaflet.LatLngBounds {
+    if (
+      !this.gridOrigin || this.gridZoom === undefined ||
+      this.gridTileSize === undefined
+    ) {
+      throw new Error("Grid parameters not set on MapManager");
+    }
+    const nwTile = leaflet.point(
+      this.gridOrigin.x + cell.i * this.gridTileSize,
+      this.gridOrigin.y + cell.j * this.gridTileSize,
+    );
+    const seTile = leaflet.point(
+      this.gridOrigin.x + (cell.i + 1) * this.gridTileSize,
+      this.gridOrigin.y + (cell.j + 1) * this.gridTileSize,
+    );
+    const nwLatLng = this.map.unproject(nwTile, this.gridZoom);
+    const seLatLng = this.map.unproject(seTile, this.gridZoom);
+    return leaflet.latLngBounds([
+      [nwLatLng.lat, nwLatLng.lng],
+      [seLatLng.lat, seLatLng.lng],
+    ]);
+  }
+
+  distanceToPlayer(cell: GridCell): number {
+    if (
+      !this.gridOrigin || this.gridZoom === undefined ||
+      this.gridTileSize === undefined || !this.getPlayerLatLng
+    ) {
+      throw new Error("Grid parameters not set on MapManager");
+    }
+    const playerLatLng = this.getPlayerLatLng();
+    const playerPt = this.map.project(playerLatLng, this.gridZoom);
+    const relX = playerPt.x - this.gridOrigin.x;
+    const relY = playerPt.y - this.gridOrigin.y;
+    const playerI = Math.floor(relX / this.gridTileSize);
+    const playerJ = Math.floor(relY / this.gridTileSize);
+    const dx = Math.abs(cell.i - playerI);
+    const dy = Math.abs(cell.j - playerJ);
+    return dx + dy;
+  }
+
+  cellCenterLatLng(cell: GridCell): leaflet.LatLng {
+    const bounds = this.cellToLatLngBounds(cell);
+    return bounds.getCenter();
   }
 }
 
@@ -315,12 +400,12 @@ class GPSMovementController implements MovementController {
       (position) => {
         const { latitude, longitude, accuracy } = position.coords;
 
-        // Filter by reported accuracy (lower is better)
+        // Filters by reported accuracy
         if (typeof accuracy === "number" && accuracy > this.maxAccuracyMeters) {
           return;
         }
 
-        // Smooth the signal with an exponential moving average
+        // Smooths signal using exponential moving average
         const raw = leaflet.latLng(latitude, longitude);
         if (!this.smoothedPosition) {
           this.smoothedPosition = raw;
@@ -470,81 +555,7 @@ class MovementFacade {
  * logical grid used by the game: mapping lat/lng to tile indices,
  * computing cell bounds and distances relative to the player.
  */
-class GridUtils {
-  private map: leaflet.Map;
-  private origin: leaflet.Point;
-  private zoom: number;
-  private tileSize: number;
-  private getPlayerLatLng: () => LatLng;
-
-  constructor(
-    map: leaflet.Map,
-    origin: leaflet.Point,
-    zoom: number,
-    tileSize: number,
-    getPlayerLatLng: () => LatLng,
-  ) {
-    this.map = map;
-    this.origin = origin;
-    this.zoom = zoom;
-    this.tileSize = tileSize;
-    this.getPlayerLatLng = getPlayerLatLng;
-  }
-
-  getKey(cell: GridCell): string {
-    return `${cell.i}:${cell.j}`;
-  }
-
-  parseKey(key: string): GridCell {
-    const [iStr, jStr] = key.split(":");
-    return { i: Number(iStr), j: Number(jStr) };
-  }
-
-  latLngToCell(latlng: LatLng): GridCell {
-    // Convert a LatLng into integer grid indices based on the world
-    // origin and configured tile size.
-    const pt = this.map.project(latlng, this.zoom);
-    const relX = pt.x - this.origin.x;
-    const relY = pt.y - this.origin.y;
-    const i = Math.floor(relX / this.tileSize);
-    const j = Math.floor(relY / this.tileSize);
-    return { i, j };
-  }
-
-  cellToLatLngBounds(cell: GridCell): leaflet.LatLngBounds {
-    const nwTile = leaflet.point(
-      this.origin.x + cell.i * this.tileSize,
-      this.origin.y + cell.j * this.tileSize,
-    );
-    const seTile = leaflet.point(
-      this.origin.x + (cell.i + 1) * this.tileSize,
-      this.origin.y + (cell.j + 1) * this.tileSize,
-    );
-    const nwLatLng = this.map.unproject(nwTile, this.zoom);
-    const seLatLng = this.map.unproject(seTile, this.zoom);
-    return leaflet.latLngBounds([
-      [nwLatLng.lat, nwLatLng.lng],
-      [seLatLng.lat, seLatLng.lng],
-    ]);
-  }
-
-  distanceToPlayer(cell: GridCell): number {
-    const playerLatLng = this.getPlayerLatLng();
-    const playerPt = this.map.project(playerLatLng, this.zoom);
-    const relX = playerPt.x - this.origin.x;
-    const relY = playerPt.y - this.origin.y;
-    const playerI = Math.floor(relX / this.tileSize);
-    const playerJ = Math.floor(relY / this.tileSize);
-    const dx = Math.abs(cell.i - playerI);
-    const dy = Math.abs(cell.j - playerJ);
-    return dx + dy;
-  }
-
-  cellCenterLatLng(cell: GridCell): leaflet.LatLng {
-    const bounds = this.cellToLatLngBounds(cell);
-    return bounds.getCenter();
-  }
-}
+// GridUtils removed; methods moved into MapManager
 
 const DIRECTIONS = [
   { label: "△", dx: 0, dy: -1, aria: "Move up" },
@@ -791,29 +802,6 @@ const mapManager = new MapManager(
   CLASSROOM_LATLNG,
   GameConfig.GAMEPLAY_ZOOM_LEVEL,
 );
-const playerMarker = mapManager.playerMarker;
-
-/*
- * BUTTONS
- *
- * Build directional controls for moving the player one grid cell at a
- * time and a toggle for free-look mode. Controls include accessibility
- * attributes and minimal state handling.
- */
-
-/**
- * Toggle free-look (map dragging) mode.
- *
- * When `enabled` is false the map recenters on the player's position and
- * dragging is disabled. When `enabled` is true dragging is enabled so the
- * user can pan independently of the player's marker.
- */
-/**
- * Create the directional control UI container.
- *
- * Returns a DOM element containing directional buttons and a center
- * toggle. Buttons are wired to call `movePlayerBy` and `setFreeLook`.
- */
 
 /*
  * TOKEN SPAWNING
@@ -828,12 +816,11 @@ const WORLD_ORIGIN_POINT = mapManager.project(
   GameConfig.GAMEPLAY_ZOOM_LEVEL,
 );
 
-const gridUtils = new GridUtils(
-  mapManager.map,
+mapManager.setGridParams(
   WORLD_ORIGIN_POINT,
   GameConfig.GAMEPLAY_ZOOM_LEVEL,
   GameConfig.TILE_SIZE_PX,
-  () => playerMarker.getLatLng(),
+  () => mapManager.playerMarker.getLatLng(),
 );
 
 class BoardState {
@@ -846,7 +833,6 @@ class BoardState {
   }
 
   private loadFromLocalStorage() {
-    // Deserialize persisted board state (saved as plain object of key -> cell overrides)
     try {
       const saved = localStorage.getItem(this.storageKey);
       if (saved) {
@@ -889,12 +875,9 @@ class BoardState {
 
 const boardState = new BoardState();
 
-// Token spawning parameters are in `GameConfig`.
 const WIN_VALUE = Math.pow(2, GameConfig.TOKEN_MAX_EXP);
 
 const gameState = new GameStateManager(WIN_VALUE);
-
-// (game instance will be created later via the Game constructor)
 
 // TokenManager encapsulates token layer and spawn logic
 class TokenManager {
@@ -906,7 +889,6 @@ class TokenManager {
 
   constructor(
     private readonly mapManager: MapManager,
-    private readonly gridUtils: GridUtils,
     private readonly gameState: GameStateManager,
     private readonly luckFn: (k: string) => number,
     private readonly tileSize: number,
@@ -939,14 +921,12 @@ class TokenManager {
     this.tokensMap.clear();
   }
 
-  // Reconcile visible tokens against the current viewport without
-  // clearing everything. This removes off-screen token layers and
-  // creates missing token layers for newly-visible cells.
+  /*
+   * Reconcile visible tokens against the current viewport without
+   * clearing everything. This removes off-screen token layers and
+   * creates missing token layers for newly-visible cells.
+   */
   reconcileVisible() {
-    // Rebuild token presence for viewport without nuking all layers:
-    // 1. Compute visible grid index bounds from map pixel bounds
-    // 2. Remove off-screen token layers
-    // 3. Spawn tokens for newly visible cells only (state preserved elsewhere)
     const bounds = this.mapManager.getBounds();
     const nw = bounds.getNorthWest();
     const se = bounds.getSouthEast();
@@ -966,11 +946,11 @@ class TokenManager {
     const visibleKeys = new Set<string>();
     for (let i = minI; i <= maxI; i++) {
       for (let j = minJ; j <= maxJ; j++) {
-        visibleKeys.add(this.gridUtils.getKey({ i, j }));
+        visibleKeys.add(this.mapManager.getKey({ i, j }));
       }
     }
 
-    // Remove off-screen token layers
+    // Removes off-screen token layers
     for (const [k, v] of Array.from(this.tokensMap.entries())) {
       if (!visibleKeys.has(k)) {
         if (this.tokensLayer.hasLayer(v.layer)) {
@@ -980,22 +960,21 @@ class TokenManager {
       }
     }
 
-    // Add tokens for newly-visible cells only
+    // Adds tokens for newly-visible cells only
     for (const key of visibleKeys) {
       if (!this.tokensMap.has(key)) {
-        const cell = this.gridUtils.parseKey(key);
+        const cell = this.mapManager.parseKey(key);
         this.trySpawnCell(cell);
       }
     }
   }
 
-  // Remove all token layers and clear the internal tokens map.
-
-  // Determine visible grid cells for the current viewport and ensure
-  // tokens for those cells are present. Off-screen token layers are
-  // removed to free memory; logical state is preserved in the memento.
+  /*
+   * Determines visible grid cells for the current viewport and ensure
+   * tokens for those cells are present. Off-screen token layers are
+   * removed to free memory; logical state is preserved in the memento.
+   */
   spawnTokens() {
-    // Reconcile visible tokens (adds new, removes off-screen)
     this.reconcileVisible();
   }
 
@@ -1005,7 +984,7 @@ class TokenManager {
    * Uses flyweight check + deterministic generation, checks memento first
    */
   public trySpawnCell(cell: GridCell) {
-    const key = this.gridUtils.getKey(cell);
+    const key = this.mapManager.getKey(cell);
 
     if (this.gameState.isCollected(key)) return;
 
@@ -1052,7 +1031,7 @@ class TokenManager {
         return;
       }
 
-      const gridDist = this.gridUtils.distanceToPlayer(cell);
+      const gridDist = this.mapManager.distanceToPlayer(cell);
 
       if (gridDist <= this.proximityRadius) {
         if (this.gameState.heldToken) {
@@ -1123,7 +1102,7 @@ class TokenManager {
   }
 
   public createTokenRectangle(cell: GridCell, exp: number) {
-    const bounds = this.gridUtils.cellToLatLngBounds(cell);
+    const bounds = this.mapManager.cellToLatLngBounds(cell);
     const rect = leaflet.rectangle(bounds, {
       weight: 1,
       color: "#cc6600",
@@ -1140,14 +1119,10 @@ class TokenManager {
     if (tooltip) tooltip.setLatLng(center);
     return rect;
   }
-
-  // Create a visible rectangle layer for a token with the given exponent.
 }
 
-// Create the token manager
 const tokenManager = new TokenManager(
   mapManager,
-  gridUtils,
   gameState,
   luck,
   GameConfig.TILE_SIZE_PX,
@@ -1170,7 +1145,6 @@ class Game implements EventEmitter {
 
   constructor(
     private readonly mapManager: MapManager,
-    private readonly gridUtils: GridUtils,
     private readonly gameState: GameStateManager,
     private readonly uiManager: UIManager,
     private readonly boardState: BoardState,
@@ -1189,9 +1163,7 @@ class Game implements EventEmitter {
       (error: GeolocationPositionError) => this.handleGPSError(error),
     );
 
-    // Let gameState notify this Game when state changes
     this.gameState.setOnStateChange(() => this.onStateChange());
-    // Connect GameStateManager to event system
     this.gameState.setEventEmitter(this);
 
     // Wire UI handlers to this Game
@@ -1339,8 +1311,8 @@ class Game implements EventEmitter {
   updatePlayerTooltip() {
     try {
       const latlng = this.mapManager.playerMarker.getLatLng();
-      const cell = this.gridUtils.latLngToCell(latlng);
-      const content = `Player ${this.gridUtils.getKey(cell)}`;
+      const cell = this.mapManager.latLngToCell(latlng);
+      const content = `Player ${this.mapManager.getKey(cell)}`;
       const t = this.mapManager.playerMarker.getTooltip();
       if (t) {
         t.setContent(content);
@@ -1399,7 +1371,7 @@ class Game implements EventEmitter {
   }
 
   trySpawnCell(cell: GridCell) {
-    const key = this.gridUtils.getKey(cell);
+    const key = this.mapManager.getKey(cell);
     const m = this.boardState.get(key);
     if (m && m.hasToken === false) return;
     this.tokenManager?.trySpawnCell(cell);
@@ -1480,24 +1452,14 @@ class Game implements EventEmitter {
   }
 }
 
-// Instantiate the Game object and let it perform initial wiring/render.
-// Prefixed with _ because it's used for side effects (event wiring) only
+// Instantiate the Game object
 const _game = new Game(
   mapManager,
-  gridUtils,
   gameState,
   uiManager,
   boardState,
   tokenManager,
 );
-
-/**
- * Update inventory and win UI elements.
- *
- * Reads `gameState` to set the on-map inventory badge and to toggle the
- * win banner when the player has obtained the winning token value.
- */
-// Game will wire map movement, zoom and resize handlers and manage token spawning.
 
 /*
  * GRID OVERLAY
@@ -1507,8 +1469,12 @@ const _game = new Game(
  * gameplay code. Tiles are styled with repeating linear gradients sized
  * to `TILE_SIZE_PX`.
  */
-leaflet.GridLayer = leaflet.GridLayer.extend({
-  createTile: function (coords: { x: number; y: number; z: number }) {
+class GridLayer extends leaflet.GridLayer {
+  constructor(options?: GridLayerOptions) {
+    super(options);
+  }
+
+  override createTile(coords: Coords): HTMLElement {
     const tile = document.createElement("div");
 
     const size = GameConfig.TILE_SIZE_PX;
@@ -1534,13 +1500,11 @@ leaflet.GridLayer = leaflet.GridLayer.extend({
       `${-offsetX}px ${-offsetY}px, ${-offsetX}px ${-offsetY}px`;
 
     return tile;
-  },
-});
+  }
+}
 
-leaflet.gridLayer = function (opts) {
-  return new leaflet.GridLayer(opts);
-};
-
-mapManager.addLayer(leaflet.gridLayer({
-  tileSize: GameConfig.TILE_SIZE_PX,
-}));
+mapManager.addLayer(
+  new GridLayer({
+    tileSize: GameConfig.TILE_SIZE_PX,
+  }),
+);
